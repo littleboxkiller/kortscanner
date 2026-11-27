@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -151,6 +151,12 @@ function prices(card){
     [['trend','Trend'],['avg','Gennemsnit'],['low','Laveste'],['avg7','Snit 7 dage'],['avg30','Snit 30 dage'],['trend-holo','Trend (holo)'],['avg-holo','Gennemsnit (holo)']]
       .forEach(([k, l]) => { if (cm[k] != null && +cm[k] > 0) out.rows.push({src:'Cardmarket', l, v:eur(cm[k]), dkk:+cm[k]*EUR_DKK}); });
   }
+  const x = card && card._ptcg;
+  if (x && !out.rows.length){
+    if (x.cm > 0){ out.cm = +x.cm; out.rows.push({src:'Cardmarket', l:'Trend', v:eur(x.cm), dkk:+x.cm * EUR_DKK}); }
+    Object.keys(x.tp || {}).forEach(k => { const v = x.tp[k]; const m = v && (v.market || v.mid); if (!m) return; if (out.tcg == null) out.tcg = +m; out.rows.push({src:'TCGplayer', l:'Markedspris (' + k.replace(/([A-Z])/g, ' $1').toLowerCase() + ')', v:usd(m), dkk:+m * USD_DKK}); if (v.low) out.rows.push({src:'TCGplayer', l:'Laveste (' + k.replace(/([A-Z])/g, ' $1').toLowerCase() + ')', v:usd(v.low), dkk:+v.low * USD_DKK}); });
+    out.alt = x.upd || true;
+  }
   const tp = p.tcgplayer;
   if (tp){
     Object.keys(tp).forEach(k => {
@@ -197,7 +203,34 @@ async function fetchGraded(ids, max){
   }
   return got;
 }
-const unitValue = e => (+e.manual > 0) ? +e.manual : (e.grade && +e.gusd > 0) ? +e.gusd * USD_DKK : (+e.eur > 0 ? +e.eur * EUR_DKK : 0);
+/* ---------- reserve-priser fra pokemontcg.io (bruges når TCGdex ikke har en pris, f.eks. gamle promo-kort) ---------- */
+const PT_KEY = 'kortscanner.ptcg.v1';
+const PT = (() => { try { const o = JSON.parse(localStorage.getItem(PT_KEY) || '{}'); const now = Date.now(); Object.keys(o).forEach(k => { if (now - o[k].t > 3 * 864e5) delete o[k]; }); return o; } catch(e){ return {}; } })();
+async function ptGet(url){
+  for (let i = 0; i < 3; i++){ try { const t = await fetch(url).then(r => r.ok || r.status === 404 ? r.text() : ''); if (t) return JSON.parse(t); } catch(e){} await new Promise(r => setTimeout(r, 600)); }
+  return null;
+}
+const hasPrice = c => { const p = c && c.pricing; return !!(p && ((p.cardmarket && (p.cardmarket.trend || p.cardmarket.avg30 || p.cardmarket.avg)) || (p.tcgplayer && Object.values(p.tcgplayer).some(v => v && typeof v === 'object' && (v.marketPrice || v.midPrice))))); };
+async function ptcgFill(card, lang){
+  if (!card || (lang || 'en') !== 'en' || hasPrice(card) || card._ptcg !== undefined) return false;
+  const k = card.id;
+  if (PT[k]){ card._ptcg = PT[k].d; return !!card._ptcg; }
+  let d = await ptGet('https://api.pokemontcg.io/v2/cards/' + encodeURIComponent(card.id));
+  let c = d && d.data && !Array.isArray(d.data) ? d.data : null;
+  if (!c && card.localId){
+    const nm = String(card.name || '').replace(/["\\]/g, '').split(' ')[0];
+    const r = await ptGet('https://api.pokemontcg.io/v2/cards?pageSize=10&q=' + encodeURIComponent(`number:"${card.localId}" name:"${nm}*"`));
+    const list = (r && r.data) || [];
+    const setName = (card.set && card.set.name || '').toLowerCase();
+    c = list.find(x => x.set && x.set.name && x.set.name.toLowerCase() === setName) || (list.length === 1 ? list[0] : null);
+  }
+  const v = c ? {tp:(c.tcgplayer && c.tcgplayer.prices) || {}, cm:c.cardmarket && c.cardmarket.prices && (c.cardmarket.prices.trendPrice || c.cardmarket.prices.averageSellPrice) || 0, upd:(c.tcgplayer && c.tcgplayer.updatedAt) || (c.cardmarket && c.cardmarket.updatedAt) || ''} : null;
+  const ok = v && (v.cm > 0 || Object.keys(v.tp).length);
+  card._ptcg = ok ? v : null;
+  PT[k] = {t:Date.now(), d:card._ptcg}; try { localStorage.setItem(PT_KEY, JSON.stringify(PT)); } catch(e){}
+  return !!ok;
+}
+const unitValue = e => (+e.manual > 0) ? +e.manual : (e.grade && +e.gusd > 0) ? +e.gusd * USD_DKK : (+e.eur > 0 ? +e.eur * EUR_DKK : (+e.usd > 0 ? +e.usd * USD_DKK : 0));
 // gemmer den gradede pris på dit eget kort, så samlingens værdi passer
 function applyGraded(e){
   const k = gradeKey(e.grade); if (!k || !e.tcg || !gKnown(e.tcg)) return false;
@@ -216,6 +249,7 @@ function applyPrice(e, card){
     if (p.cmRaw && p.cmRaw.avg30) e.avg30 = +p.cmRaw.avg30;
     if (p.cmRaw && p.cmRaw.avg7) e.avg7 = +p.cmRaw.avg7;
   }
+  if (p.cm == null && p.tcg > 0) e.usd = +p.tcg;
   const t = tcgId(card); if (t) e.tcg = t;
   e.eurDate = Date.now();
   checkAlert(e);
@@ -237,7 +271,7 @@ async function refreshPrices(all){
   const list = S.data.entries.filter(e => all || !e.eurDate || Date.now() - e.eurDate > 864e5);
   let n = 0;
   for (const e of list){
-    try { delete S.cardCache[ck(e.cardId, e.api)]; const c = await getCard(e.cardId, e.api); if (c) applyPrice(e, c); n++; }
+    try { delete S.cardCache[ck(e.cardId, e.api)]; const c = await getCard(e.cardId, e.api); if (c){ await ptcgFill(c, e.api); applyPrice(e, c); } n++; }
     catch(x){ break; }
     if (n % 5 === 0){ save(); render(); }
     await new Promise(r => setTimeout(r, 120));
@@ -301,9 +335,9 @@ function priceBox(card){
   const p = prices(card);
   if (!p.rows.length) return `<div class="box col"><h3>Markedspris</h3><p class="small mut" style="margin:0">Ingen prisdata for dette kort${card && card._lang === 'ja' ? ' (japanske kort har sjældent priser her – sæt en egen værdi)' : ''}.</p>${marketLinks(card.name, card.localId)}</div>`;
   return `<div class="box col" style="gap:6px"><h3>Markedspris</h3>
-  ${p.cm != null ? `<div class="row between"><span class="mut small">Cardmarket trend</span><span class="big" style="font-size:28px">${kr(p.cm * EUR_DKK)}</span></div>` : ''}
+  ${p.cm != null ? `<div class="row between"><span class="mut small">Cardmarket trend</span><span class="big" style="font-size:28px">${kr(p.cm * EUR_DKK)}</span></div>` : p.tcg != null ? `<div class="row between"><span class="mut small">TCGplayer markedspris</span><span class="big" style="font-size:28px">${kr(p.tcg * USD_DKK)}</span></div>` : ''}
   <div>${p.rows.map(r => `<div class="price"><span>${esc(r.src)} · ${esc(r.l)}</span><span class="nw b">${esc(r.v)}${r.dkk ? ` <span class="mut">(${kr(r.dkk)})</span>` : ''}</span></div>`).join('')}</div>
-  <span class="tiny mut">Priser fra TCGdex${pUpd(card) ? ', opdateret ' + esc(pUpd(card)) : ''}. Euro omregnet med 7,46.</span>
+  <span class="tiny mut">${p.alt ? `Priser fra pokemontcg.io${typeof p.alt === 'string' ? ', opdateret ' + esc(p.alt) : ''}. Dollar omregnet med ${USD_DKK.toFixed(2).replace('.', ',')}.` : `Priser fra TCGdex${pUpd(card) ? ', opdateret ' + esc(pUpd(card)) : ''}. Euro omregnet med 7,46.`}</span>
   ${marketLinks(card.name, card.localId)}</div>`;
 }
 function sparkline(points){
@@ -1121,12 +1155,14 @@ async function openCard(id, lang){
   lang = lang || 'en';
   go({type:'card', id, lang});
   if (!cached(id, lang)){ try { await getCard(id, lang); } catch(e){ toast('Kunne ikke hente kortet.'); } if (S.view && S.view.id === id) render(); }
+  if (await ptcgFill(cached(id, lang), lang)){ if (S.view && S.view.id === id) render(); }
   const t = tcgId(cached(id, lang));
   if (t && !gKnown(t) && user){ gBusy = true; render(); await fetchGraded([t], 1); gBusy = false; if (S.view && S.view.id === id) render(); }
 }
 async function openEntry(id){
   const e = entry(id); go({type:'entry', id});
   if (e && !cached(e.cardId, e.api)){ try { const c = await getCard(e.cardId, e.api); if (c){ applyPrice(e, c); save(); } } catch(x){} if (S.view && S.view.id === id) render(); }
+  if (e){ const c = cached(e.cardId, e.api); if (await ptcgFill(c, e.api)){ applyPrice(e, c); save(); if (S.view && S.view.id === id) render(); } }
   if (e && !e.tcg){ const c = cached(e.cardId, e.api); const t = tcgId(c); if (t){ e.tcg = t; save(); } }
   if (e && e.tcg && user){
     if (!gKnown(e.tcg)){ gBusy = true; render(); await fetchGraded([e.tcg], 1); gBusy = false; }

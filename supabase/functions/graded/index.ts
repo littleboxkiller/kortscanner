@@ -22,13 +22,42 @@ const slim = (j: any) => {
     const smart = v.smartMarketPrice && v.smartMarketPrice.price;
     g[k] = [Math.round((smart || v.medianPrice || v.averagePrice || 0) * 100) / 100, Math.round((v.medianPrice || 0) * 100) / 100, v.count || 0, v.marketTrend || null, (v.smartMarketPrice && v.smartMarketPrice.confidence) || null];
   }
-  return { n: d.name || null, m: (d.prices && d.prices.market) || null, g, u: (d.ebay && d.ebay.updatedAt) || d.updatedAt || null };
+  return { id: d.tcgPlayerId ? String(d.tcgPlayerId) : null, n: d.name || null, no: d.cardNumber || null, s: d.setName || null, m: (d.prices && d.prices.market) || null, g, u: (d.ebay && d.ebay.updatedAt) || d.updatedAt || null };
 };
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
+    // find: kort uden TCGplayer-nummer (f.eks. gamle promo-kort) slås op på navn og nummer
+    if (Array.isArray(body.find) && body.find.length) {
+      const admin0 = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+      const key0 = Deno.env.get('PPT_API_KEY');
+      const res: Record<string, unknown> = {};
+      const normNo = (x: unknown) => String(x || '').toUpperCase().split('/')[0].replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]*)0+(\d)/, '$1$2');
+      for (const f of body.find.slice(0, 3)) {
+        const ck = 'f:' + String(f.key || '').slice(0, 60);
+        if (!f || !f.key || !f.name) continue;
+        const { data: c0 } = await admin0.from('graded_cache').select('data,fetched_at').eq('id', ck).maybeSingle();
+        if (c0 && Date.now() - new Date(c0.fetched_at).getTime() < DAY * 3) { res[f.key] = c0.data; continue; }
+        if (!key0) break;
+        const want = normNo(f.number);
+        const url = `https://www.pokemonpricetracker.com/api/v2/cards?search=${encodeURIComponent(String(f.name).slice(0, 60))}&limit=${Math.min(Number(f.limit) || 25, 50)}&includeEbay=true`;
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${key0}` } });
+        if (r.status === 429) { res[f.key] = { error: 429 }; break; }
+        const j = await r.json().catch(() => null);
+        const list = (j && Array.isArray(j.data)) ? j.data : [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hit = list.find((d: any) => want && normNo(d.cardNumber) === want) || null;
+        const out0 = hit ? slim({ data: hit }) : { g: {}, none: true };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (body.debug) (out0 as any).seen = list.map((d: any) => [d.cardNumber, d.name, d.setName]).slice(0, 30);
+        res[f.key] = out0;
+        await admin0.from('graded_cache').upsert({ id: ck, data: out0, fetched_at: new Date().toISOString() });
+        if (hit && hit.tcgPlayerId) await admin0.from('graded_cache').upsert({ id: String(hit.tcgPlayerId), data: out0, fetched_at: new Date().toISOString() });
+      }
+      return json({ found: res });
+    }
     const ids: string[] = [...new Set(((body && body.ids) || []).map((x: unknown) => String(x)).filter((x: string) => /^\d{1,10}$/.test(x)))].slice(0, 40) as string[];
     if (!ids.length) return json({ data: {} });
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);

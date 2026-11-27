@@ -11,6 +11,10 @@ const LANGS = ['Engelsk','Japansk','Tysk','Dansk','Andet'];
 const VARIANTS = {normal:'Normal', holo:'Holo', reverse:'Reverse holo', firstEdition:'1. udgave', wPromo:'Promo'};
 const GRADERS = ['PSA','BGS','CGC','SGC'];
 const GRADES = ['10','9.5','9','8.5','8','7','6','5','4','3','2','1'];
+// karakterer man kan vælge i filteret (nøglerne følger PokemonPriceTracker: psa10, bgs9_5 ...)
+const GRADE_OPTS = [['raw','Ikke gradet'],['psa10','PSA 10'],['psa9','PSA 9'],['psa8','PSA 8'],['bgs9_5','BGS 9.5'],['cgc10','CGC 10']];
+const gradeLabel = k => (GRADE_OPTS.find(o => o[0] === k) || [k, String(k).toUpperCase().replace(/(\D+)(\d)/, '$1 $2').replace('_', '.')])[1];
+const gradeKey = g => g && g.co ? (g.co + g.g).toLowerCase().replace('.', '_') : null;
 const SERIES = [['all','Alle serier'],['me','Mega Evolution'],['sv','Scarlet & Violet'],['swsh','Sword & Shield'],['sm','Sun & Moon'],['xy','XY'],['old','Ældre']];
 const PRICE_BANDS = [['all','Alle priser',0,Infinity],['u100','Under 100 kr',0,100],['m500','100–500 kr',100,500],['m2000','500–2.000 kr',500,2000],['o2000','Over 2.000 kr',2000,Infinity]];
 const COLORS = ['#FFCB3D','#FF7A59','#3DD68C','#5AA9FF','#B28DFF','#FF6FB5','#2EC4B6','#C0C6D0'];
@@ -27,7 +31,7 @@ const S = {
   delArm:false, refreshing:false, sell:null,
   profile:null, profiles:{}, friends:[], receipts:[], notes:[],
   fq:'', fhits:[], friendView:null, rcFilter:'all', syncErr:false,
-  sf:{serie:'all', rarity:'', price:'all', sort:'rel'}, hf:{serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true}, sheet:null, rarities:{}, sp:{},
+  sf:{serie:'all', rarity:'', price:'all', sort:'rel', grade:'raw'}, hf:{serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true, grade:'raw'}, sheet:null, rarities:{}, sp:{}, tcg:{},
 };
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -157,7 +161,48 @@ function prices(card){
   }
   return out;
 }
-const unitValue = e => (+e.manual > 0) ? +e.manual : (+e.eur > 0 ? +e.eur * EUR_DKK : 0);
+/* ---------- gradede priser (eBay-salg via PokemonPriceTracker, gennem vores egen server-funktion) ---------- */
+const GP_KEY = 'kortscanner.graded.v1', FX_KEY = 'kortscanner.usd.v1';
+let USD_DKK = 6.5; // opdateres med dagens kurs
+const GP = (() => { try { const o = JSON.parse(localStorage.getItem(GP_KEY) || '{}'); const now = Date.now(); Object.keys(o).forEach(k => { if (now - o[k].t > 864e5) delete o[k]; }); return o; } catch(e){ return {}; } })();
+const saveGP = () => { try { localStorage.setItem(GP_KEY, JSON.stringify(GP)); } catch(e){} };
+async function loadFx(){
+  try { const c = JSON.parse(localStorage.getItem(FX_KEY) || 'null'); if (c && Date.now() - c.t < 864e5){ USD_DKK = c.r; return; } } catch(e){}
+  try { const j = await fetch('https://api.frankfurter.app/latest?from=USD&to=DKK').then(r => r.json()); const r = j && j.rates && +j.rates.DKK; if (r > 3 && r < 15){ USD_DKK = r; localStorage.setItem(FX_KEY, JSON.stringify({t:Date.now(), r})); } } catch(e){}
+}
+// TCGplayer-nummeret bruges til at finde kortet i prisdatabasen
+const tcgId = card => { const tp = card && card.pricing && card.pricing.tcgplayer; if (!tp) return null; for (const k of Object.keys(tp)){ const v = tp[k]; if (v && typeof v === 'object' && v.productId) return String(v.productId); } return null; };
+const gData = id => id && GP[id] && GP[id].d;
+// pris i dollar for en karakter: medianen af de seneste salg (mere stabil), ellers "smart" markedsprisen
+const gUsd = (id, k) => { const d = gData(id); const v = d && d.g && d.g[k]; return v ? (+v[1] || +v[0] || 0) : 0; };
+const gDkk = (id, k) => gUsd(id, k) * USD_DKK;
+const gKnown = id => !!(id && GP[id]);
+let gBusy = false, gLimited = false; const gTried = new Set();
+async function fetchGraded(ids, max){
+  ids = [...new Set(ids.filter(Boolean).map(String))].filter(id => !GP[id] && !gTried.has(id));
+  if (!ids.length || !sb || !user || gLimited) return false;
+  ids.forEach(id => gTried.add(id)); // spørg kun én gang pr. kort pr. besøg
+  let got = false;
+  for (let round = 0; round < 4 && ids.length; round++){
+    let res;
+    try { res = await sb.functions.invoke('graded', {body:{ids:ids.slice(0, 40), max:max || 8}}); } catch(e){ break; }
+    const d = res && res.data && res.data.data; if (!d) break;
+    let n = 0;
+    Object.keys(d).forEach(id => { const v = d[id]; if (v && !v.error){ GP[id] = {t:Date.now(), d:v}; n++; } else if (v && v.error === 404){ GP[id] = {t:Date.now(), d:{g:{}}}; n++; } });
+    if (n){ got = true; saveGP(); }
+    if (res.data.limited){ gLimited = true; break; }
+    ids = ids.filter(id => !GP[id]);
+    if (!n || max === 1) break;
+  }
+  return got;
+}
+const unitValue = e => (+e.manual > 0) ? +e.manual : (e.grade && +e.gusd > 0) ? +e.gusd * USD_DKK : (+e.eur > 0 ? +e.eur * EUR_DKK : 0);
+// gemmer den gradede pris på dit eget kort, så samlingens værdi passer
+function applyGraded(e){
+  const k = gradeKey(e.grade); if (!k || !e.tcg || !gKnown(e.tcg)) return false;
+  const u = gUsd(e.tcg, k); if (!u) return false;
+  const changed = +e.gusd !== u; e.gusd = u; e.gk = k; if (changed) checkAlert(e); return changed;
+}
 const value = e => unitValue(e) * (+e.qty || 1);
 function applyPrice(e, card){
   const p = prices(card);
@@ -170,6 +215,7 @@ function applyPrice(e, card){
     if (p.cmRaw && p.cmRaw.avg30) e.avg30 = +p.cmRaw.avg30;
     if (p.cmRaw && p.cmRaw.avg7) e.avg7 = +p.cmRaw.avg7;
   }
+  const t = tcgId(card); if (t) e.tcg = t;
   e.eurDate = Date.now();
   checkAlert(e);
 }
@@ -195,6 +241,8 @@ async function refreshPrices(all){
     if (n % 5 === 0){ save(); render(); }
     await new Promise(r => setTimeout(r, 120));
   }
+  const gr = S.data.entries.filter(e => e.grade && e.grade.co && e.tcg);
+  if (gr.length){ await fetchGraded(gr.map(e => e.tcg), 8); gr.forEach(applyGraded); }
   save(); S.refreshing = false; render();
   if (all) toast(n ? 'Priserne er opdateret.' : 'Kunne ikke hente priser lige nu.');
 }
@@ -282,16 +330,29 @@ function historyBox(e){
   ${note ? `<span class="tiny mut">${esc(note)}</span>` : ''}</div>`;
 }
 
-function gradedBox(name, number, mine){
+function gradedBox(name, number, mine, tid){
   const q = g => encodeURIComponent([name, number, g].filter(Boolean).join(' '));
-  const rows = (mine && mine.co ? [gradeText(mine)] : []).concat(['PSA 10','PSA 9','PSA 8'].filter(x => !mine || x !== gradeText(mine)));
-  return `<div class="box col" style="gap:8px"><h3>Gradede priser</h3>
-  <p class="small mut" style="margin:0">Priserne ovenfor er for kort uden gradering. Se hvad gradede eksemplarer er solgt for:</p>
-  ${rows.map(g => `<div class="price"><span><b>${esc(g)}</b>${mine && g === gradeText(mine) ? ' <span class="tiny mut">(dit kort)</span>' : ''}</span><a class="b" style="color:var(--link)" href="https://www.ebay.com/sch/i.html?_nkw=${q(g)}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener">Solgte på eBay ›</a></div>`).join('')}
-  <a class="btn ghost" href="https://www.pricecharting.com/search-products?type=prices&q=${q('')}" target="_blank" rel="noopener">Se alle karakterer på PriceCharting</a>
-  <span class="tiny mut">Automatiske PSA-priser i appen kommer, når en prisdatabase med gradede priser er koblet på.</span></div>`;
+  const mk = gradeKey(mine);
+  const base = ['psa10','psa9','psa8','bgs9_5','cgc10'];
+  const keys = (mk ? [mk] : []).concat(base.filter(k => k !== mk));
+  const d = gData(tid), loading = tid && !gKnown(tid) && gBusy;
+  const trendTxt = t => t === 'up' ? '<span class="tiny b up">↑ stiger</span>' : t === 'down' ? '<span class="tiny b down">↓ falder</span>' : '';
+  const row = k => { const v = d && d.g && d.g[k]; const lbl = gradeLabel(k);
+    return `<div class="price"><span><b>${esc(lbl)}</b>${k === mk ? ' <span class="tiny mut">(dit kort)</span>' : ''}${v ? `<br><span class="tiny mut">${esc(v[2])} salg ${trendTxt(v[3])}</span>` : ''}</span>
+    ${v && (+v[1] || +v[0]) ? `<span class="nw b" style="text-align:right">${kr((+v[1] || +v[0]) * USD_DKK)}<br><span class="tiny mut">${esc(usd(+v[1] || +v[0]))}</span></span>` : `<a class="b small" style="color:var(--link)" href="https://www.ebay.com/sch/i.html?_nkw=${q(lbl)}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener">${loading ? 'Henter …' : 'Solgte på eBay ›'}</a>`}</div>`; };
+  const extra = d && d.g ? Object.keys(d.g).filter(k => !keys.includes(k) && /^(psa|bgs|cgc)/.test(k) && d.g[k][2] >= 3).sort((a, b) => (d.g[b][1] || 0) - (d.g[a][1] || 0)) : [];
+  const note = !tid ? 'Kortet findes ikke i den amerikanske prisdatabase (typisk japanske kort og kort fra Pocket).'
+    : !user ? 'Log ind for at se gradede priser.'
+    : gLimited && !d ? 'Dagens kvote på gradede priser er brugt op – prøv igen i morgen.'
+    : d ? `Medianpris af solgte kort på eBay m.fl.${d.u ? ', opdateret ' + esc(new Date(d.u).toLocaleDateString('da-DK')) : ''}. Dollar omregnet med ${USD_DKK.toFixed(2).replace('.', ',')}.` : '';
+  return `<div class="box col" style="gap:6px"><h3>Gradede priser</h3>
+  <p class="small mut" style="margin:0">Hvad kortet sælges for, når det er gradet (PSA, BGS, CGC).</p>
+  <div>${keys.map(row).join('')}</div>
+  ${extra.length ? `<details><summary class="small b" style="cursor:pointer">Flere karakterer (${extra.length})</summary><div>${extra.map(row).join('')}</div></details>` : ''}
+  ${note ? `<span class="tiny mut">${note}</span>` : ''}
+  <a class="btn ghost" href="https://www.pricecharting.com/search-products?type=prices&q=${q('')}" target="_blank" rel="noopener">Se alle karakterer på PriceCharting</a></div>`;
 }
-const filterCount = f => ['serie','price'].filter(k => f[k] !== 'all').length + (f.rarity ? 1 : 0) + (f.sort && f.sort !== 'rel' ? 1 : 0) + (['hot','pop','sets','mine'].filter(k => f[k] === false).length);
+const filterCount = f => ['serie','price'].filter(k => f[k] !== 'all').length + (f.grade && f.grade !== 'raw' ? 1 : 0) + (f.rarity ? 1 : 0) + (f.sort && f.sort !== 'rel' ? 1 : 0) + (['hot','pop','sets','mine'].filter(k => f[k] === false).length);
 const filterBtn = (which, f) => { const n = filterCount(f); return `<button class="btn ghost" data-act="openSheet" data-v="${which}" style="min-height:44px;padding:0 14px;flex:none" aria-label="Filter${n ? ', ' + n + ' aktive' : ''}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 5h18M6 12h12M10 19h4"/></svg>Filter${n ? ` <span class="fcount">${n}</span>` : ''}</button>`; };
 const pillGroup = (which, key, list, cur) => `<div class="pills">${list.map(([k, l]) => `<button class="pill" data-act="fset" data-w="${which}" data-k="${key}" data-v="${esc(k)}" aria-pressed="${cur === k}">${esc(l)}</button>`).join('')}</div>`;
 function filterSheet(){
@@ -301,10 +362,11 @@ function filterSheet(){
   return `<div class="sheet-bg" data-act="closeSheet"></div><div class="sheet" role="dialog" aria-label="Filter">
   <div class="row between"><h2>Filter</h2><button class="btn text" data-act="resetFilter" data-v="${w}">Nulstil</button></div>
   <div class="col" style="gap:6px"><span class="small b mut">Serie</span>${pillGroup(w, 'serie', SERIES, f.serie)}</div>
-  <div class="col" style="gap:6px"><span class="small b mut">Pris pr. stk.</span>${pillGroup(w, 'price', PRICE_BANDS.map(b => [b[0], b[1]]), f.price)}</div>
+  <div class="col" style="gap:6px"><span class="small b mut">Vis priser for</span>${pillGroup(w, 'grade', GRADE_OPTS, f.grade || 'raw')}${f.grade && f.grade !== 'raw' ? `<span class="tiny mut">Priserne viser hvad ${esc(gradeLabel(f.grade))}-kort er solgt for.${user ? '' : ' Log ind for at se gradede priser.'}</span>` : ''}</div>
+  <div class="col" style="gap:6px"><span class="small b mut">Pris pr. stk.${f.grade && f.grade !== 'raw' ? ' (' + esc(gradeLabel(f.grade)) + ')' : ''}</span>${pillGroup(w, 'price', PRICE_BANDS.map(b => [b[0], b[1]]), f.price)}</div>
   ${w === 'search' ? `<label class="f">Sjældenhed<select class="i" data-f="sfRarity"><option value="">Alle sjældenheder</option>${rar.map(r => `<option${f.rarity === r ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select></label>
   <div class="col" style="gap:6px"><span class="small b mut">Sortér</span>${pillGroup(w, 'sort', [['rel','Relevans'],['priceDesc','Dyreste først'],['priceAsc','Billigste først'],['new','Nyeste sæt']], f.sort)}</div>
-  ${f.price !== 'all' || f.sort.startsWith('price') ? '<span class="tiny mut">Pris-filter og -sortering henter priser for de første 48 resultater.</span>' : ''}` :
+  ${f.price !== 'all' || f.sort.startsWith('price') || (f.grade && f.grade !== 'raw') ? `<span class="tiny mut">Priser hentes for de første ${f.grade && f.grade !== 'raw' ? 24 : 48} resultater.</span>` : ''}` :
   `<div class="col" style="gap:6px"><span class="small b mut">Vis på startsiden</span><div class="pills">${[['hot','Nye jagtkort'],['pop','Populære kort'],['sets','Nyeste sæt'],['mine','Mine kort']].map(([k, l]) => `<button class="pill" data-act="ftoggle" data-k="${k}" aria-pressed="${f[k] !== false}">${l}</button>`).join('')}</div></div>`}
   <button class="btn full" data-act="closeSheet">Vis resultater</button></div>`;
 }
@@ -360,29 +422,45 @@ function vSog(){
   <div class="row"><input class="i grow" type="search" data-f="q" value="${esc(S.search.q)}" placeholder="${S.lang === 'ja' ? 'Navn på japansk, f.eks. ピカチュウ' : 'Navn, f.eks. Charizard eller Pikachu'}" aria-label="Søg efter kort" enterkeyhint="search">${filterBtn('search', S.sf)}</div>
   <div id="results">${resultsHtml()}</div></div>`;
 }
+// prisen der vises i søgningen: normalpris eller den valgte karakter
+const sPrice = (id, lang) => { const g = S.sf.grade; if (!g || g === 'raw') return S.sp[ck(id, lang)]; const t = S.tcg[ck(id, lang)]; if (t === undefined) return undefined; if (!t || !gKnown(t)) return t === null ? 0 : undefined; return gDkk(t, g); };
 function searchView(){
   const s = S.search, f = S.sf; if (!s.results) return [];
   let list = s.results.filter(c => f.serie === 'all' || serieOf(c.id) === f.serie);
-  if (f.price !== 'all') list = list.filter(c => S.sp[ck(c.id, s.lang)] != null && inBand(S.sp[ck(c.id, s.lang)], f.price));
-  if (f.sort === 'priceDesc') list = list.slice().sort((a, b) => (S.sp[ck(b.id, s.lang)] || 0) - (S.sp[ck(a.id, s.lang)] || 0));
-  else if (f.sort === 'priceAsc') list = list.filter(c => S.sp[ck(c.id, s.lang)] > 0).sort((a, b) => S.sp[ck(a.id, s.lang)] - S.sp[ck(b.id, s.lang)]);
+  const P = c => sPrice(c.id, s.lang);
+  if (f.price !== 'all') list = list.filter(c => P(c) != null && inBand(P(c), f.price));
+  if (f.sort === 'priceDesc') list = list.slice().sort((a, b) => (P(b) || 0) - (P(a) || 0));
+  else if (f.sort === 'priceAsc') list = list.filter(c => P(c) > 0).sort((a, b) => P(a) - P(b));
   else if (f.sort === 'new'){ const idx = {}; (S.sets[s.lang] || []).forEach((x, i) => idx[x.id] = i); list = list.slice().sort((a, b) => (idx[setOf(b.id)] ?? -1) - (idx[setOf(a.id)] ?? -1)); }
   return list;
 }
-const needPrices = () => S.sf.price !== 'all' || S.sf.sort.startsWith('price');
+const gradedOn = f => f.grade && f.grade !== 'raw';
+const needPrices = () => S.sf.price !== 'all' || S.sf.sort.startsWith('price') || gradedOn(S.sf);
 let enrichN = 0;
 async function enrichSearch(){
   const s = S.search; if (!s.results || !needPrices()) return;
   const n = ++enrichN, lang = s.lang;
-  const todo = s.results.filter(c => S.sf.serie === 'all' || serieOf(c.id) === S.sf.serie).slice(0, 48).filter(c => S.sp[ck(c.id, lang)] == null);
-  if (!todo.length){ const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
+  const lim = gradedOn(S.sf) ? 24 : 48;
+  const first = s.results.filter(c => S.sf.serie === 'all' || serieOf(c.id) === S.sf.serie).slice(0, lim);
+  const todo = first.filter(c => S.sp[ck(c.id, lang)] == null);
+  const doGraded = async () => {
+    if (!gradedOn(S.sf) || lang !== 'en') return;
+    const ids = first.map(c => S.tcg[ck(c.id, lang)]).filter(t => t && !gKnown(t));
+    if (!ids.length) return;
+    s.enriching = true; gBusy = true; const r1 = $('#results'); if (r1) r1.innerHTML = resultsHtml();
+    await fetchGraded(ids, 8); gBusy = false;
+    if (n !== enrichN) return;
+    s.enriching = false; const r2 = $('#results'); if (r2) r2.innerHTML = resultsHtml();
+  };
+  if (!todo.length){ const r = $('#results'); if (r) r.innerHTML = resultsHtml(); await doGraded(); return; }
   s.enriching = true; const r0 = $('#results'); if (r0) r0.innerHTML = resultsHtml();
   for (let i = 0; i < todo.length; i += 6){
-    await Promise.all(todo.slice(i, i + 6).map(async c => { try { const full = await getCard(c.id, lang); const p = prices(full); S.sp[ck(c.id, lang)] = p.cm != null ? p.cm * EUR_DKK : 0; } catch(e){ S.sp[ck(c.id, lang)] = 0; } }));
+    await Promise.all(todo.slice(i, i + 6).map(async c => { try { const full = await getCard(c.id, lang); const p = prices(full); S.sp[ck(c.id, lang)] = p.cm != null ? p.cm * EUR_DKK : 0; S.tcg[ck(c.id, lang)] = tcgId(full); } catch(e){ S.sp[ck(c.id, lang)] = 0; S.tcg[ck(c.id, lang)] = null; } }));
     if (n !== enrichN) return;
     const r = $('#results'); if (r) r.innerHTML = resultsHtml();
   }
   s.enriching = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml();
+  await doGraded();
 }
 function resultsHtml(){
   const s = S.search;
@@ -390,8 +468,9 @@ function resultsHtml(){
   if (s.err) return `<div class="note">${esc(s.err)}</div>`;
   if (!s.results) return `<p class="small mut">${S.lang === 'ja' ? 'Skriv mindst 2 tegn. Japanske kort søges med japanske navne.' : 'Skriv mindst 3 bogstaver – eller vælg en sjældenhed under Filter.'}</p>`;
   const list = searchView();
+  if (gradedOn(S.sf) && s.lang === 'ja') return '<p class="small mut">Gradede priser findes kun for engelske kort.</p>';
   if (!list.length) return `${s.enriching ? spinner('Henter priser …') : ''}<p class="small mut">Ingen kort matcher.${filterCount(S.sf) ? ' Prøv at ændre filteret.' : S.lang === 'en' ? ' Tjek stavningen – navne er på engelsk.' : ''}</p>`;
-  return `<p class="small mut">${list.length}${s.results.length >= 120 && !filterCount(S.sf) ? '+' : ''} kort${s.enriching ? ' · henter priser …' : ''}</p><div class="cards">${list.slice(0, 120).map(c => { const p = S.sp[ck(c.id, s.lang)]; return `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span>${p > 0 ? `<b class="small">${kr(p)}</b>` : ''}</button>`; }).join('')}</div>`;
+  return `<p class="small mut">${list.length}${s.results.length >= 120 && !filterCount(S.sf) ? '+' : ''} kort${s.enriching ? ' · henter priser …' : ''}</p><div class="cards">${list.slice(0, 120).map(c => { const p = sPrice(c.id, s.lang), g = gradedOn(S.sf); return `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span>${p > 0 ? `<span class="row between small"><b>${kr(p)}</b>${g ? `<span class="gbadge" style="position:static">${esc(gradeLabel(S.sf.grade))}</span>` : ''}</span>` : g && p === 0 ? '<span class="tiny mut">Ingen gradet pris</span>' : ''}</button>`; }).join('')}</div>`;
 }
 function vCard(){
   const {id, lang} = S.view, c = cached(id, lang);
@@ -405,7 +484,7 @@ function vCard(){
   <div class="col" style="gap:2px"><h1>${esc(c.name)}</h1><span class="small mut">${esc([c.set && c.set.name, c.localId + (c.set && c.set.cardCount && c.set.cardCount.official ? '/' + c.set.cardCount.official : ''), c.rarity, lang === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span>
   ${owned.length ? `<span class="small b up">Du har ${owned.reduce((a, e) => a + (+e.qty || 1), 0)} stk.</span>` : ''}</div>
   ${priceBox(c)}
-  ${gradedBox(c.name, c.localId, null)}
+  ${gradedBox(c.name, c.localId, null, tcgId(c))}
   <div class="box col"><h3>Tilføj til samling</h3>
   <div class="grid2"><label class="f">Samling<select class="i" id="aColl">${Object.keys(COLLS).map(k => `<option value="${k}">${COLLS[k]}</option>`).join('')}</select></label>
   <label class="f">Antal<input class="i" id="aQty" type="number" min="1" inputmode="numeric" value="1"></label></div>
@@ -427,14 +506,14 @@ function vEntry(){
   return `<div class="col">${back('Samling')}
   <div class="big-art">${e.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((e.name||'?')[0])}</span><img src="${img(e.image,'high')}" alt="${esc(e.name)}" onerror="this.remove()"></div>` : artEl(null, e.name)}</div>
   <div class="col" style="gap:2px"><h1>${esc(e.name)}${e.grade ? ` <span class="gpill">${esc(gradeText(e.grade))}</span>` : ''}</h1><span class="small mut">${esc([e.setName, e.localId + (e.official ? '/' + e.official : ''), e.rarity, VARIANTS[e.variant], e.api === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span></div>
-  ${e.grade && !(+e.manual > 0) ? `<div class="note">Værdien er for et kort <b>uden</b> gradering. Sæt din egen værdi for dit ${esc(gradeText(e.grade))} under "Dit eksemplar" – se solgte priser under "Gradede priser".</div>` : ''}
+  ${e.grade && !(+e.manual > 0) ? (+e.gusd > 0 ? `<div class="note">Værdien er hvad ${esc(gradeText(e.grade))}-kort sælges for (median af solgte). Du kan sætte din egen værdi under "Dit eksemplar".</div>` : `<div class="note">Der er ingen gradet pris for dit ${esc(gradeText(e.grade))} endnu, så værdien er for et kort <b>uden</b> gradering. Sæt din egen værdi under "Dit eksemplar".</div>`) : ''}
   <div class="kpis"><div class="kpi"><span class="tiny mut">Betalt</span><b>${kr((+e.buy || 0) * (+e.qty || 1))}</b></div><div class="kpi"><span class="tiny mut">Værdi</span><b>${kr(value(e))}</b></div><div class="kpi"><span class="tiny mut">Gevinst</span><b class="${g >= 0 ? 'up' : 'down'}">${sgn(g)}</b></div></div>
   ${historyBox(e)}
   <div class="box col"><h3>Prisalarm</h3><p class="small mut" style="margin:0">Få besked i appen, når værdien pr. stk. kommer under eller over din grænse. Prisen tjekkes, når du åbner appen.</p>
   <div class="grid2"><label class="f">Under (kr)<input class="i" type="number" min="0" inputmode="numeric" data-a="below" value="${esc(a.below || '')}" placeholder="–"></label><label class="f">Over (kr)<input class="i" type="number" min="0" inputmode="numeric" data-a="above" value="${esc(a.above || '')}" placeholder="–"></label></div>
   ${a.below || a.above ? `<span class="tiny mut">Nu: ${kr(unitValue(e))} pr. stk.</span>` : ''}</div>
   ${c ? priceBox(c) : spinner('Henter priser …')}
-  ${gradedBox(e.name, e.localId, e.grade)}
+  ${gradedBox(e.name, e.localId, e.grade, e.tcg || (c && tcgId(c)))}
   <div class="box col"><h3>Dit eksemplar</h3>
   <div class="pills" role="group" aria-label="Samling">${Object.keys(COLLS).map(k => `<button class="pill" data-act="move" data-v="${k}" aria-pressed="${e.coll === k}">${COLLS[k]}</button>`).join('')}</div>
   <div class="grid2"><label class="f">Antal<input class="i" type="number" min="1" inputmode="numeric" data-e="qty" value="${esc(e.qty || 1)}"></label>
@@ -649,11 +728,11 @@ function vNoter(){
 /* ---------- startside (highlights) ---------- */
 const POPULAR_CARDS = ['sv08.5-161','swsh7-215','swsh7-218','sv03.5-199','base1-4','swsh11-186','swsh8-271','sv04.5-234','sv08-238','sv02-203','sv03-223','sv03.5-205'];
 const POPULAR_SETS = ['sv08.5','sv03.5','swsh7','sv08','swsh12.5','base1'];
-const HOME_KEY = 'kortscanner.home.v2';
+const HOME_KEY = 'kortscanner.home.v3';
 const imageOk = base => new Promise(res => { if (!base) return res(false); const i = new Image(); const t = setTimeout(() => res(false), 5000); i.onload = () => { clearTimeout(t); res(true); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = base + '/low.webp'; });
 const onlyWithImages = async list => { const ok = await Promise.all(list.map(c => imageOk(c.image))); return list.filter((c, i) => ok[i]); };
 const isMainSet = s => !isPocket(s.id + '-0') && !/promo/i.test(s.name) && !/-c$/.test(s.id);
-const cardBrief = c => { const cm = (c.pricing || {}).cardmarket || {}; return {id:c.id, name:c.name, set:c.set && c.set.name, setId:c.set && c.set.id, localId:c.localId, image:c.image || '', rarity:c.rarity || '', eur:+(cm.trend || cm.avg30 || cm.avg || 0), avg30:+(cm.avg30 || 0)}; };
+const cardBrief = c => { const cm = (c.pricing || {}).cardmarket || {}; return {id:c.id, name:c.name, set:c.set && c.set.name, setId:c.set && c.set.id, localId:c.localId, image:c.image || '', rarity:c.rarity || '', eur:+(cm.trend || cm.avg30 || cm.avg || 0), avg30:+(cm.avg30 || 0), tcg:tcgId(c)}; };
 async function loadHome(force){
   const H = S.home;
   if (H.loading) return;
@@ -681,7 +760,20 @@ async function loadHome(force){
   H.loading = false; render();
 }
 const chg = c => c.avg30 > 0 && c.eur > 0 ? (c.eur - c.avg30) / c.avg30 * 100 : null;
+// startsidens pris: normalpris eller den valgte karakter (i kroner)
+const hPrice = c => gradedOn(S.hf) ? (gKnown(c.tcg) ? gDkk(c.tcg, S.hf.grade) : null) : c.eur * EUR_DKK;
+async function loadHomeGraded(){
+  const d = S.home.data; if (!d || !gradedOn(S.hf)) return;
+  const ids = d.hot.concat(d.popular).map(c => c.tcg).filter(t => t && !gKnown(t));
+  if (!ids.length || gBusy) return;
+  gBusy = true; render();
+  await fetchGraded(ids, 8); gBusy = false; render();
+}
 function miniCard(c){
+  if (gradedOn(S.hf)){
+    const v = hPrice(c), t = c.tcg && gData(c.tcg) && gData(c.tcg).g[S.hf.grade];
+    return `<button class="hcard" data-act="openCard" data-v="${esc(c.id)}" data-l="en">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.set || '')}</span><span class="row between small"><b class="nw">${v ? kr(v) : v === null ? '…' : '–'}</b><span class="tiny b ${t && t[3] === 'down' ? 'down' : 'up'}">${esc(gradeLabel(S.hf.grade))}${t && t[3] === 'up' ? ' ↑' : t && t[3] === 'down' ? ' ↓' : ''}</span></span></button>`;
+  }
   const ch = chg(c);
   return `<button class="hcard" data-act="openCard" data-v="${esc(c.id)}" data-l="en">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.set || '')}</span><span class="row between small"><b class="nw">${kr(c.eur * EUR_DKK)}</b>${ch != null ? `<span class="tiny b ${ch >= 0 ? 'up' : 'down'}">${pct(ch)}</span>` : ''}</span></button>`;
 }
@@ -694,12 +786,13 @@ function vHome(){
   const ch30 = then > 0 ? (nowV - then) / then * 100 : null;
   const pend = toConfirm().length, req = incomingReq().length, alerts = S.notes.filter(n => !n.read).length;
   const movers = held.filter(e => e.avg30 && e.eur).map(e => ({e, ch:(e.eur - e.avg30) / e.avg30 * 100})).sort((a, b) => Math.abs(b.ch) - Math.abs(a.ch)).slice(0, 3);
-  const F = S.hf, okC = c => (F.serie === 'all' || serieOf(c.id) === F.serie) && inBand(c.eur * EUR_DKK, F.price);
+  const F = S.hf, okC = c => (F.serie === 'all' || serieOf(c.id) === F.serie) && (F.price === 'all' || (hPrice(c) != null && inBand(hPrice(c), F.price)));
+  if (d && gradedOn(F)) setTimeout(loadHomeGraded, 0);
   let pop = d ? d.popular.filter(okC) : [];
-  const hotF = d ? d.hot.filter(okC) : [], setsF = d ? d.newSets.filter(x => F.serie === 'all' || serieOf(x.id + '-0') === F.serie) : [];
+  const hotF = d ? d.hot.filter(okC).sort((a, b) => (hPrice(b) || 0) - (hPrice(a) || 0)) : [], setsF = d ? d.newSets.filter(x => F.serie === 'all' || serieOf(x.id + '-0') === F.serie) : [];
   if (H.mode === 'up') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(b) - chg(a));
   else if (H.mode === 'down') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(a) - chg(b));
-  else pop.sort((a, b) => b.eur - a.eur);
+  else pop.sort((a, b) => (hPrice(b) || 0) - (hPrice(a) || 0));
   const fmtDate = s => { try { return new Date(s).toLocaleDateString('da-DK', {day:'numeric', month:'short', year:'numeric'}); } catch(e){ return s; } };
   return `<div class="col">
   <h1 style="font-size:24px">Hej${p.display_name || p.username ? ' ' + esc(p.display_name || p.username) : ''}</h1>
@@ -719,7 +812,7 @@ function vHome(){
   ${F.pop !== false ? `<section class="col" style="gap:8px"><h2>Populære kort</h2>
     <div class="pills" role="group" aria-label="Sortér populære kort"><button class="pill" data-act="homeMode" data-v="value" aria-pressed="${H.mode === 'value'}">Mest værdifulde</button><button class="pill" data-act="homeMode" data-v="up" aria-pressed="${H.mode === 'up'}">Stiger mest</button><button class="pill" data-act="homeMode" data-v="down" aria-pressed="${H.mode === 'down'}">Falder mest</button></div>
     <div class="hscroll" role="list">${pop.length ? pop.map(miniCard).join('') : '<span class="small mut">Ingen kort matcher.</span>'}</div>
-    <span class="tiny mut">Priser er Cardmarket trend for kort uden gradering, omregnet til kroner. Ændringen er i forhold til 30-dages gennemsnittet.</span></section>` : ''}
+    <span class="tiny mut">${gradedOn(F) ? `Priser er median af solgte ${esc(gradeLabel(F.grade))}-kort på eBay m.fl., omregnet til kroner.${gLimited ? ' Dagens kvote er brugt op, så nogle kort mangler pris.' : ''}${!user ? ' Log ind for at se gradede priser.' : ''}` : 'Priser er Cardmarket trend for kort uden gradering, omregnet til kroner. Ændringen er i forhold til 30-dages gennemsnittet.'}</span></section>` : ''}
   ${F.sets !== false ? `<section class="col" style="gap:8px"><h2>Nyeste sæt</h2>
     <div class="hscroll" role="list">${setsF.length ? '' : '<span class="small mut">Ingen sæt matcher.</span>'}${setsF.map(s => `<button class="hset" data-act="openSet" data-v="${esc(s.id)}" data-l="en"><span class="hset-logo">${s.logo ? `<img src="${esc(s.logo)}.png" alt="" loading="lazy" onerror="this.remove()">` : ''}<span>${esc(s.name)}</span></span><span class="tiny mut">${esc(s.serie || '')}</span><span class="tiny">${esc(fmtDate(s.date))} · ${esc(s.official || '?')} kort</span></button>`).join('')}</div></section>` : ''}
   ${movers.length && F.mine !== false ? `<section class="col" style="gap:8px"><h2>Dine kort, der bevæger sig</h2>${movers.map(m => `<button class="li" data-act="openEntry" data-v="${esc(m.e.id)}">${artEl(m.e.image, m.e.name)}<div class="grow"><div class="b">${esc(m.e.name)}</div><div class="tiny mut">${esc(m.e.setName)} · ${kr(unitValue(m.e))}</div></div><b class="nw ${m.ch >= 0 ? 'up' : 'down'}">${pct(m.ch)}</b></button>`).join('')}</section>` : ''}
@@ -899,10 +992,18 @@ async function openCard(id, lang){
   lang = lang || 'en';
   go({type:'card', id, lang});
   if (!cached(id, lang)){ try { await getCard(id, lang); } catch(e){ toast('Kunne ikke hente kortet.'); } if (S.view && S.view.id === id) render(); }
+  const t = tcgId(cached(id, lang));
+  if (t && !gKnown(t) && user){ gBusy = true; render(); await fetchGraded([t], 1); gBusy = false; if (S.view && S.view.id === id) render(); }
 }
 async function openEntry(id){
   const e = entry(id); go({type:'entry', id});
   if (e && !cached(e.cardId, e.api)){ try { const c = await getCard(e.cardId, e.api); if (c){ applyPrice(e, c); save(); } } catch(x){} if (S.view && S.view.id === id) render(); }
+  if (e && !e.tcg){ const c = cached(e.cardId, e.api); const t = tcgId(c); if (t){ e.tcg = t; save(); } }
+  if (e && e.tcg && user){
+    if (!gKnown(e.tcg)){ gBusy = true; render(); await fetchGraded([e.tcg], 1); gBusy = false; }
+    if (applyGraded(e)) save();
+    if (S.view && S.view.id === id) render();
+  }
 }
 async function openSet(id, lang){ lang = lang || 'en'; go({type:'set', id, lang, missing:false}); if (!S.setCache[ck(id, lang)]){ try { await getSet(id, lang); } catch(e){ toast('Kunne ikke hente sættet.'); } if (S.view && S.view.id === id) render(); } }
 async function openFriend(id){
@@ -917,10 +1018,10 @@ function addCard(){
     image:c.image || '', rarity:c.rarity || '', coll:$('#aColl').value, qty:Math.max(1, parseInt($('#aQty').value) || 1), cond:$('#aCond').value, variant:$('#aVar').value, lang:$('#aLang').value,
     buy:Math.max(0, parseInt($('#aBuy').value) || 0), manual:0, note:'', added:new Date().toISOString()};
   if ($('#aCo').value){ e.grade = {co:$('#aCo').value, g:$('#aG').value}; e.cond = 'Gradet (PSA/BGS/CGC)'; }
-  applyPrice(e, c);
+  applyPrice(e, c); applyGraded(e);
   S.data.entries.push(e); save();
   toast(e.name + ' er lagt i ' + COLLS[e.coll] + '.');
-  S.scan = {phase:'idle'}; S.tab = 'samling'; go({type:'entry', id:e.id});
+  S.scan = {phase:'idle'}; S.tab = 'samling'; openEntry(e.id);
 }
 async function doSell(){
   const sl = S.sell, e = entry(sl.id); const unit = +sl.price || 0; if (!e || !unit || !sl.got) return;
@@ -1043,7 +1144,7 @@ document.addEventListener('click', async ev => {
     case 'closeSheet': S.sheet = null; render(); if (S.tab === 'sog' && !S.view) { if (S.search.q || S.sf.rarity) doSearch(S.search.q); } return;
     case 'fset': { const f = b.dataset.w === 'search' ? S.sf : S.hf; f[b.dataset.k] = v; break; }
     case 'ftoggle': S.hf[b.dataset.k] = S.hf[b.dataset.k] === false; break;
-    case 'resetFilter': if (v === 'search') S.sf = {serie:'all', rarity:'', price:'all', sort:'rel'}; else S.hf = {serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true}; break;
+    case 'resetFilter': if (v === 'search') S.sf = {serie:'all', rarity:'', price:'all', sort:'rel', grade:'raw'}; else S.hf = {serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true, grade:'raw'}; break;
     case 'homeReload': loadHome(true); return;
     case 'homeMode': S.home.mode = v; break;
     default: return;
@@ -1127,7 +1228,7 @@ async function enterApp(u){
   if (!perr && !prof){ profileSetup(); return; }
   S.profile = prof || {id:u.id, username:'', share_collection:true}; S.profiles[u.id] = S.profile;
   chrome(true);
-  S.view = null; S.tab = 'home'; render(); loadHome();
+  S.view = null; S.tab = 'home'; render(); loadHome(); loadFx();
   if (!entered){
     entered = true;
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

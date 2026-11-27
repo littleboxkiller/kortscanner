@@ -228,7 +228,7 @@ function updateBadges(){
 
 /* ---------- små byggeklodser ---------- */
 function artEl(base, name, qty){
-  return `<div class="art">${base ? `<img src="${img(base,'low')}" alt="" loading="lazy">` : `<span class="ph" aria-hidden="true">${esc((name||'?')[0])}</span>`}${(+qty||1) > 1 ? `<span class="qty">×${esc(qty)}</span>` : ''}</div>`;
+  return `<div class="art"><span class="ph" aria-hidden="true">${esc((name||'?')[0])}</span>${base ? `<img src="${img(base,'low')}" alt="" loading="lazy" onerror="this.remove()">` : ''}${(+qty||1) > 1 ? `<span class="qty">×${esc(qty)}</span>` : ''}</div>`;
 }
 const back = l => `<button class="btn text" data-act="back" style="align-self:flex-start;padding:0">‹ ${esc(l || 'Tilbage')}</button>`;
 const opts = (arr, v) => arr.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('');
@@ -341,7 +341,7 @@ function vCard(){
   const vars = Object.keys(c.variants || {}).filter(k => c.variants[k] && VARIANTS[k]);
   const p = prices(c);
   return `<div class="col">${back()}
-  <div class="big-art">${c.image ? `<div class="art"><img src="${img(c.image,'high')}" alt="${esc(c.name)}"></div>` : artEl(null, c.name)}</div>
+  <div class="big-art">${c.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((c.name||'?')[0])}</span><img src="${img(c.image,'high')}" alt="${esc(c.name)}" onerror="this.remove()"></div>` : artEl(null, c.name)}</div>
   <div class="col" style="gap:2px"><h1>${esc(c.name)}</h1><span class="small mut">${esc([c.set && c.set.name, c.localId + (c.set && c.set.cardCount && c.set.cardCount.official ? '/' + c.set.cardCount.official : ''), c.rarity, lang === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span>
   ${owned.length ? `<span class="small b up">Du har ${owned.reduce((a, e) => a + (+e.qty || 1), 0)} stk.</span>` : ''}</div>
   ${priceBox(c)}
@@ -362,7 +362,7 @@ function vEntry(){
   const g = value(e) - (+e.buy || 0) * (+e.qty || 1);
   const a = e.alert || {};
   return `<div class="col">${back('Samling')}
-  <div class="big-art">${e.image ? `<div class="art"><img src="${img(e.image,'high')}" alt="${esc(e.name)}"></div>` : artEl(null, e.name)}</div>
+  <div class="big-art">${e.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((e.name||'?')[0])}</span><img src="${img(e.image,'high')}" alt="${esc(e.name)}" onerror="this.remove()"></div>` : artEl(null, e.name)}</div>
   <div class="col" style="gap:2px"><h1>${esc(e.name)}</h1><span class="small mut">${esc([e.setName, e.localId + (e.official ? '/' + e.official : ''), e.rarity, VARIANTS[e.variant], e.api === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span></div>
   <div class="kpis"><div class="kpi"><span class="tiny mut">Betalt</span><b>${kr((+e.buy || 0) * (+e.qty || 1))}</b></div><div class="kpi"><span class="tiny mut">Værdi</span><b>${kr(value(e))}</b></div><div class="kpi"><span class="tiny mut">Gevinst</span><b class="${g >= 0 ? 'up' : 'down'}">${sgn(g)}</b></div></div>
   ${historyBox(e)}
@@ -582,7 +582,9 @@ function vNoter(){
 /* ---------- startside (highlights) ---------- */
 const POPULAR_CARDS = ['sv08.5-161','swsh7-215','swsh7-218','sv03.5-199','base1-4','swsh11-186','swsh8-271','sv04.5-234','sv08-238','sv02-203','sv03-223','sv03.5-205'];
 const POPULAR_SETS = ['sv08.5','sv03.5','swsh7','sv08','swsh12.5','base1'];
-const HOME_KEY = 'kortscanner.home.v1';
+const HOME_KEY = 'kortscanner.home.v2';
+const imageOk = base => new Promise(res => { if (!base) return res(false); const i = new Image(); const t = setTimeout(() => res(false), 5000); i.onload = () => { clearTimeout(t); res(true); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = base + '/low.webp'; });
+const onlyWithImages = async list => { const ok = await Promise.all(list.map(c => imageOk(c.image))); return list.filter((c, i) => ok[i]); };
 const isMainSet = s => !isPocket(s.id + '-0') && !/promo/i.test(s.name) && !/-c$/.test(s.id);
 const cardBrief = c => { const cm = (c.pricing || {}).cardmarket || {}; return {id:c.id, name:c.name, set:c.set && c.set.name, setId:c.set && c.set.id, localId:c.localId, image:c.image || '', rarity:c.rarity || '', eur:+(cm.trend || cm.avg30 || cm.avg || 0), avg30:+(cm.avg30 || 0)}; };
 async function loadHome(force){
@@ -602,8 +604,8 @@ async function loadHome(force){
     const [hotCards, popCards] = await Promise.all([
       Promise.all(hotIds.map(id => getCard(id, 'en').catch(() => null))),
       Promise.all(POPULAR_CARDS.map(id => getCard(id, 'en').catch(() => null)))]);
-    const hot = hotCards.filter(Boolean).map(cardBrief).filter(c => c.eur > 0 && c.image).sort((a, b) => b.eur - a.eur).slice(0, 10);
-    const popular = popCards.filter(Boolean).map(cardBrief).filter(c => c.image);
+    const hot = (await onlyWithImages(hotCards.filter(Boolean).map(cardBrief).filter(c => c.eur > 0 && c.image))).sort((a, b) => b.eur - a.eur).slice(0, 10);
+    const popular = await onlyWithImages(popCards.filter(Boolean).map(cardBrief).filter(c => c.image));
     const byId = {}; sets.forEach(s => byId[s.id] = s);
     const popSets = POPULAR_SETS.map(id => byId[id]).filter(Boolean).map(s => ({id:s.id, name:s.name, official:s.official, total:s.total}));
     H.data = {t:Date.now(), hot, popular, newSets, popSets};

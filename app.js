@@ -363,10 +363,10 @@ async function getWorker(){
   worker = await Tesseract.createWorker('eng', 1, {logger: m => { if (m.status === 'recognizing text' && S.scan.phase === 'busy'){ /* quiet */ } }});
   return worker;
 }
-function region(src, y0, y1, x0 = 0, x1 = 1){
+function region(src, y0, y1, x0 = 0, x1 = 1, filter = 'grayscale(1) contrast(1.6)', width = 1600){
   const sx = src.width * x0, sy = src.height * y0, sw = src.width * (x1 - x0), sh = src.height * (y1 - y0);
-  const k = Math.max(1, 1600 / sw); const c = document.createElement('canvas'); c.width = Math.round(sw * k); c.height = Math.round(sh * k);
-  const g = c.getContext('2d'); g.filter = 'grayscale(1) contrast(1.6)'; g.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const k = Math.max(1, width / sw); const c = document.createElement('canvas'); c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  const g = c.getContext('2d'); g.filter = filter; g.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   return c;
 }
 const STOP = new Set(['BASIC','STAGE','HP','TRAINER','ITEM','SUPPORTER','STADIUM','EVOLVES','FROM','POKEMON','POKÉMON','ENERGY','TOOL','PUT','THIS','CARD','ONTO','ACE','SPEC']);
@@ -401,6 +401,7 @@ async function identify(canvas){
     const top = await w.recognize(region(canvas, 0, 0.16));
     let num = guessNumber(bottom.data.text), name = guessName(top.data.text);
     if (!num){ const left = await w.recognize(region(canvas, 0.84, 1, 0, 0.55)); num = guessNumber(left.data.text); }
+    if (!num){ const z = await w.recognize(region(canvas, 0.88, 0.99, 0, 0.45, 'grayscale(1) contrast(2.5) brightness(1.1)', 2200)); num = guessNumber(z.data.text); }
     S.scan.msg = 'Finder kortet …'; render();
     let cands = [];
     if (num){
@@ -409,6 +410,7 @@ async function identify(canvas){
       const locals = [...new Set([num.pre + num.local, num.pre + String(+num.local), num.pre + num.local.padStart(3, '0'), num.local])];
       const tries = []; hits.slice(0, 30).forEach(s => locals.forEach(l => tries.push({s, l})));
       const found = await Promise.all(tries.map(t => api('/sets/' + encodeURIComponent(t.s.id) + '/' + encodeURIComponent(t.l)).catch(() => null)));
+      if (num.pre){ const byId = await api('/cards?localId=eq:' + encodeURIComponent(num.pre + num.local)).catch(() => null); for (const b of (byId || []).filter(x => !isPocket(x.id)).slice(0, 6)){ const full = await getCard(b.id).catch(() => null); if (full) found.push(full); } }
       const seen = new Set();
       found.forEach(c => { if (c && !seen.has(c.id)){ seen.add(c.id); S.cardCache[c.id] = c; cands.push({id:c.id, name:c.name, image:c.image, setName:c.set && c.set.name, localId:c.localId}); } });
       if (name) cands.sort((a, b) => nameScore(name, b.name) - nameScore(name, a.name));

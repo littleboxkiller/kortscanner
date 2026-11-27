@@ -1,5 +1,8 @@
 // Kortscanner: AI-scanning af et kortbillede med Google Gemini.
 // Nøglen ligger som hemmelighed (GEMINI_API_KEY) på serveren og sendes aldrig til appen.
+import { createClient } from 'npm:@supabase/supabase-js@2';
+const LIMIT = Number(Deno.env.get('SCAN_MONTHLY_LIMIT') || 1000); // AI-scanninger pr. måned for hele appen
+const month = () => new Date().toISOString().slice(0, 7);
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -28,6 +31,11 @@ Deno.serve(async (req) => {
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json({ error: 'missing_key' });
     const body = await req.json().catch(() => ({}));
+    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    const { data: u } = await admin.from('scan_usage').select('count').eq('month', month()).maybeSingle();
+    const used = (u && u.count) || 0;
+    if (body && body.usage) return json({ used, limit: LIMIT });
+    if (used >= LIMIT) return json({ error: 'month_limit', used, limit: LIMIT });
     if (body && body.listModels) {
       const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
       const j = await r.json().catch(() => null);
@@ -53,7 +61,8 @@ Deno.serve(async (req) => {
       const text = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts.map((p: { text?: string }) => p.text || '').join('');
       let card = null;
       try { card = JSON.parse(String(text).replace(/^```json|```$/g, '').trim()); } catch (_) { last = 'parse'; continue; }
-      return json({ card, model });
+      const { data: n } = await admin.rpc('bump_scan', { m: month() });
+      return json({ card, model, used: n || used + 1, limit: LIMIT });
     }
     return json({ error: last || 'failed' });
   } catch (e) {

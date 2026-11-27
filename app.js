@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '21';
+const APP_VERSION = '22';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -460,7 +460,7 @@ function vScan(){
     <label class="btn full" for="camIn">Tag billede af kortet</label>
     <label class="btn ghost full" for="fileIn">Vælg fra dine billeder</label>`;
   }
-  return `<div class="col"><h1>Scan kort</h1>${body}<span class="tiny mut" style="text-align:center">Version ${APP_VERSION}</span></div>`;
+  return `<div class="col"><h1>Scan kort</h1>${body}${usageLine()}<span class="tiny mut" style="text-align:center">Version ${APP_VERSION}</span></div>`;
 }
 
 function vSog(){
@@ -1044,6 +1044,11 @@ async function visualRank(canvas, cands, onStep){
   return ranked.concat(cands.slice(150));
 }
 /* ---------- AI-scanning (Google Gemini via vores server-funktion "scan") ---------- */
+async function loadScanUsage(){
+  if (!sb || !user) return;
+  try { const res = await sb.functions.invoke('scan', {body:{usage:true}}); const d = res && res.data; if (d && d.limit){ S.scanUsage = {used:d.used, limit:d.limit}; if (S.tab === 'scan' && !S.view) render(); } } catch(e){}
+}
+const usageLine = () => { const u = S.scanUsage; if (!u) return ''; const left = Math.max(0, u.limit - u.used); return `<span class="tiny mut" style="text-align:center">AI-scanninger denne måned: ${u.used.toLocaleString('da-DK')} af ${u.limit.toLocaleString('da-DK')} brugt${left ? '' : ' – resten af måneden bruges den simple tekstlæser'}</span>`; };
 async function aiScan(canvas){
   if (!sb || !user) return {err:'login'};
   const k = Math.min(1, 1600 / Math.max(canvas.width, canvas.height)), c = document.createElement('canvas');
@@ -1051,6 +1056,7 @@ async function aiScan(canvas){
   try {
     const res = await Promise.race([sb.functions.invoke('scan', {body:{image:c.toDataURL('image/jpeg', 0.85)}}), new Promise(r => setTimeout(() => r({data:{error:'timeout'}}), 25000))]);
     const d = res && res.data; if (!d) return {err:'net'};
+    if (d.used != null) S.scanUsage = {used:d.used, limit:d.limit};
     if (d.error) return {err:String(d.error)};
     return d.card && d.card.name ? {card:d.card} : {err:'nocard'};
   } catch(e){ return {err:'net'}; }
@@ -1160,7 +1166,7 @@ async function identify(canvas, photo){
     if (cands.length > 1){ S.scan.msg = 'Sammenligner med kortbilleder …'; render(); cands = await visualRank(canvas, cands, (a, b) => { S.scan.msg = `Sammenligner med kortbilleder (${a}/${b}) …`; const m = document.querySelector('#app .spin'); if (m && m.parentElement) m.parentElement.lastChild.textContent = S.scan.msg; }); }
     cands = cands.slice(0, 40);
     S.scan = {phase:'result', lang, cands, img:S.scan.img, guess:{name, num: num && num.text},
-      msg: (aiErr === 'quota' ? 'AI-scanneren har brugt dagens gratis kvote, så appen brugte den simple tekstlæser. ' : aiErr && !['missing_key','login'].includes(aiErr) ? 'AI-scanneren svarede ikke, så appen brugte den simple tekstlæser. ' : '') + (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
+      msg: (aiErr === 'month_limit' ? 'Månedens AI-scanninger er brugt, så appen brugte den simple tekstlæser. ' : aiErr === 'quota' ? 'AI-scanneren har brugt dagens gratis kvote, så appen brugte den simple tekstlæser. ' : aiErr && !['missing_key','login'].includes(aiErr) ? 'AI-scanneren svarede ikke, så appen brugte den simple tekstlæser. ' : '') + (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
     if (cands.length === 1){ go({type:'card', id:cands[0].id, lang}); return; }
   } catch(e){
     console.error('scan', e);
@@ -1325,7 +1331,7 @@ document.addEventListener('click', async ev => {
   const a = b.dataset.act, v = b.dataset.v;
   if (a !== 'del' && a !== 'unfriend') S.delArm = false;
   switch (a){
-    case 'tab': stopCam(); if (v === 'scan'){ const ci = $('#camIn'); if (ci) ci.click(); S.scan = {phase:'idle'}; } S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); return;
+    case 'tab': stopCam(); if (v === 'scan'){ const ci = $('#camIn'); if (ci) ci.click(); S.scan = {phase:'idle'}; loadScanUsage(); } S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); return;
     case 'back': if (S.view && S.view.type === 'sell'){ const id = S.sell.id; S.sell = null; go({type:'entry', id}); } else if (S.view) go(null); else { S.tab = 'home'; render(); window.scrollTo(0, 0); } return;
     case 'coll': S.coll = v; break;
     case 'lang': S.lang = v; S.search = {q:'', results:null, busy:false, err:''}; S.sf.rarity = ''; break;

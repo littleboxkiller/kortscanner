@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -170,12 +170,14 @@ function prices(card){
 }
 /* ---------- gradede priser (eBay-salg via PokemonPriceTracker, gennem vores egen server-funktion) ---------- */
 const GP_KEY = 'kortscanner.graded.v1', FX_KEY = 'kortscanner.usd.v1';
-let USD_DKK = 6.5; // opdateres med dagens kurs
+let USD_DKK = 6.8; // opdateres med dagens kurs
 const GP = (() => { try { const o = JSON.parse(localStorage.getItem(GP_KEY) || '{}'); const now = Date.now(); Object.keys(o).forEach(k => { if (now - o[k].t > 864e5) delete o[k]; }); return o; } catch(e){ return {}; } })();
 const saveGP = () => { try { localStorage.setItem(GP_KEY, JSON.stringify(GP)); } catch(e){} };
 async function loadFx(){
   try { const c = JSON.parse(localStorage.getItem(FX_KEY) || 'null'); if (c && Date.now() - c.t < 864e5){ USD_DKK = c.r; return; } } catch(e){}
-  try { const j = await fetch('https://api.frankfurter.app/latest?from=USD&to=DKK').then(r => r.json()); const r = j && j.rates && +j.rates.DKK; if (r > 3 && r < 15){ USD_DKK = r; localStorage.setItem(FX_KEY, JSON.stringify({t:Date.now(), r})); } } catch(e){}
+  for (const [u, pick] of [['https://api.frankfurter.dev/v1/latest?base=USD&symbols=DKK', j => j.rates && j.rates.DKK], ['https://open.er-api.com/v6/latest/USD', j => j.rates && j.rates.DKK]]){
+    try { const j = await fetch(u).then(r => r.json()); const r = +pick(j); if (r > 3 && r < 15){ USD_DKK = r; localStorage.setItem(FX_KEY, JSON.stringify({t:Date.now(), r})); if (user) render(); return; } } catch(e){}
+  }
 }
 // TCGplayer-nummeret bruges til at finde kortet i prisdatabasen
 const tcgId = card => { const tp = card && card.pricing && card.pricing.tcgplayer; if (!tp) return null; for (const k of Object.keys(tp)){ const v = tp[k]; if (v && typeof v === 'object' && v.productId) return String(v.productId); } return null; };

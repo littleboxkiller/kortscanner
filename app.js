@@ -9,6 +9,10 @@ const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
 const LANGS = ['Engelsk','Japansk','Tysk','Dansk','Andet'];
 const VARIANTS = {normal:'Normal', holo:'Holo', reverse:'Reverse holo', firstEdition:'1. udgave', wPromo:'Promo'};
+const GRADERS = ['PSA','BGS','CGC','SGC'];
+const GRADES = ['10','9.5','9','8.5','8','7','6','5','4','3','2','1'];
+const SERIES = [['all','Alle serier'],['me','Mega Evolution'],['sv','Scarlet & Violet'],['swsh','Sword & Shield'],['sm','Sun & Moon'],['xy','XY'],['old','Ældre']];
+const PRICE_BANDS = [['all','Alle priser',0,Infinity],['u100','Under 100 kr',0,100],['m500','100–500 kr',100,500],['m2000','500–2.000 kr',500,2000],['o2000','Over 2.000 kr',2000,Infinity]];
 const COLORS = ['#FFCB3D','#FF7A59','#3DD68C','#5AA9FF','#B28DFF','#FF6FB5','#2EC4B6','#C0C6D0'];
 const STORE_KEY = 'kortscanner.v1';
 
@@ -23,6 +27,7 @@ const S = {
   delArm:false, refreshing:false, sell:null,
   profile:null, profiles:{}, friends:[], receipts:[], notes:[],
   fq:'', fhits:[], friendView:null, rcFilter:'all', syncErr:false,
+  sf:{serie:'all', rarity:'', price:'all', sort:'rel'}, hf:{serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true}, sheet:null, rarities:{}, sp:{},
 };
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -124,6 +129,10 @@ async function getSet(id, lang){
 }
 const img = (base, q) => base ? esc(base + '/' + (q || 'low') + '.webp') : '';
 const setOf = id => String(id).slice(0, String(id).lastIndexOf('-'));
+function serieOf(id){ const x = String(id).slice(0, String(id).lastIndexOf('-')).toLowerCase(); if (/^me/.test(x)) return 'me'; if (/^sv/.test(x)) return 'sv'; if (/^swsh|^s\d/.test(x)) return 'swsh'; if (/^sm/.test(x)) return 'sm'; if (/^xy/.test(x)) return 'xy'; return 'old'; }
+const band = k => PRICE_BANDS.find(b => b[0] === k) || PRICE_BANDS[0];
+const inBand = (kr, k) => { const b = band(k); return k === 'all' || (kr > 0 && kr >= b[2] && kr < b[3]); };
+const gradeText = g => g && g.co ? g.co + ' ' + g.g : '';
 const isPocket = id => /^(A\d+[a-z]?|B\d+[a-z]?|P-[AB])-/i.test(String(id));
 
 /* ---------- priser, historik og alarmer ---------- */
@@ -227,8 +236,8 @@ function updateBadges(){
 }
 
 /* ---------- små byggeklodser ---------- */
-function artEl(base, name, qty){
-  return `<div class="art"><span class="ph" aria-hidden="true">${esc((name||'?')[0])}</span>${base ? `<img src="${img(base,'low')}" alt="" loading="lazy" onerror="this.remove()">` : ''}${(+qty||1) > 1 ? `<span class="qty">×${esc(qty)}</span>` : ''}</div>`;
+function artEl(base, name, qty, grade){
+  return `<div class="art"><span class="ph" aria-hidden="true">${esc((name||'?')[0])}</span>${base ? `<img src="${img(base,'low')}" alt="" loading="lazy" onerror="this.remove()">` : ''}${(+qty||1) > 1 ? `<span class="qty">×${esc(qty)}</span>` : ''}${grade && grade.co ? `<span class="gbadge">${esc(gradeText(grade))}</span>` : ''}</div>`;
 }
 const back = l => `<button class="btn text" data-act="back" style="align-self:flex-start;padding:0">‹ ${esc(l || 'Tilbage')}</button>`;
 const opts = (arr, v) => arr.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('');
@@ -273,6 +282,33 @@ function historyBox(e){
   ${note ? `<span class="tiny mut">${esc(note)}</span>` : ''}</div>`;
 }
 
+function gradedBox(name, number, mine){
+  const q = g => encodeURIComponent([name, number, g].filter(Boolean).join(' '));
+  const rows = (mine && mine.co ? [gradeText(mine)] : []).concat(['PSA 10','PSA 9','PSA 8'].filter(x => !mine || x !== gradeText(mine)));
+  return `<div class="box col" style="gap:8px"><h3>Gradede priser</h3>
+  <p class="small mut" style="margin:0">Priserne ovenfor er for kort uden gradering. Se hvad gradede eksemplarer er solgt for:</p>
+  ${rows.map(g => `<div class="price"><span><b>${esc(g)}</b>${mine && g === gradeText(mine) ? ' <span class="tiny mut">(dit kort)</span>' : ''}</span><a class="b" style="color:var(--link)" href="https://www.ebay.com/sch/i.html?_nkw=${q(g)}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener">Solgte på eBay ›</a></div>`).join('')}
+  <a class="btn ghost" href="https://www.pricecharting.com/search-products?type=prices&q=${q('')}" target="_blank" rel="noopener">Se alle karakterer på PriceCharting</a>
+  <span class="tiny mut">Automatiske PSA-priser i appen kommer, når en prisdatabase med gradede priser er koblet på.</span></div>`;
+}
+const filterCount = f => ['serie','price'].filter(k => f[k] !== 'all').length + (f.rarity ? 1 : 0) + (f.sort && f.sort !== 'rel' ? 1 : 0) + (['hot','pop','sets','mine'].filter(k => f[k] === false).length);
+const filterBtn = (which, f) => { const n = filterCount(f); return `<button class="btn ghost" data-act="openSheet" data-v="${which}" style="min-height:44px;padding:0 14px;flex:none" aria-label="Filter${n ? ', ' + n + ' aktive' : ''}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 5h18M6 12h12M10 19h4"/></svg>Filter${n ? ` <span class="fcount">${n}</span>` : ''}</button>`; };
+const pillGroup = (which, key, list, cur) => `<div class="pills">${list.map(([k, l]) => `<button class="pill" data-act="fset" data-w="${which}" data-k="${key}" data-v="${esc(k)}" aria-pressed="${cur === k}">${esc(l)}</button>`).join('')}</div>`;
+function filterSheet(){
+  const w = S.sheet; if (!w) return '';
+  const f = w === 'search' ? S.sf : S.hf;
+  const rar = S.rarities[S.lang] || [];
+  return `<div class="sheet-bg" data-act="closeSheet"></div><div class="sheet" role="dialog" aria-label="Filter">
+  <div class="row between"><h2>Filter</h2><button class="btn text" data-act="resetFilter" data-v="${w}">Nulstil</button></div>
+  <div class="col" style="gap:6px"><span class="small b mut">Serie</span>${pillGroup(w, 'serie', SERIES, f.serie)}</div>
+  <div class="col" style="gap:6px"><span class="small b mut">Pris pr. stk.</span>${pillGroup(w, 'price', PRICE_BANDS.map(b => [b[0], b[1]]), f.price)}</div>
+  ${w === 'search' ? `<label class="f">Sjældenhed<select class="i" data-f="sfRarity"><option value="">Alle sjældenheder</option>${rar.map(r => `<option${f.rarity === r ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select></label>
+  <div class="col" style="gap:6px"><span class="small b mut">Sortér</span>${pillGroup(w, 'sort', [['rel','Relevans'],['priceDesc','Dyreste først'],['priceAsc','Billigste først'],['new','Nyeste sæt']], f.sort)}</div>
+  ${f.price !== 'all' || f.sort.startsWith('price') ? '<span class="tiny mut">Pris-filter og -sortering henter priser for de første 48 resultater.</span>' : ''}` :
+  `<div class="col" style="gap:6px"><span class="small b mut">Vis på startsiden</span><div class="pills">${[['hot','Nye jagtkort'],['pop','Populære kort'],['sets','Nyeste sæt'],['mine','Mine kort']].map(([k, l]) => `<button class="pill" data-act="ftoggle" data-k="${k}" aria-pressed="${f[k] !== false}">${l}</button>`).join('')}</div></div>`}
+  <button class="btn full" data-act="closeSheet">Vis resultater</button></div>`;
+}
+
 /* ---------- visninger ---------- */
 function vSamling(){
   const all = S.data.entries, held = all.filter(e => e.coll !== 'wish');
@@ -289,7 +325,7 @@ function vSamling(){
   <div class="pills" role="group" aria-label="Vælg samling">${[['all','Alle'],['binder','Binder'],['sale','Til salg'],['wish','Ønskeliste']].map(([k, l]) => `<button class="pill" data-act="coll" data-v="${k}" aria-pressed="${S.coll === k}">${l} ${k === 'all' ? all.length : all.filter(e => e.coll === k).length}</button>`).join('')}</div>
   <div class="row"><input class="i grow" type="search" data-f="filter" value="${esc(S.filter)}" placeholder="Søg i din samling" aria-label="Søg i din samling">
   <select class="i" style="width:auto" data-f="sort" aria-label="Sortér">${[['value','Værdi'],['name','Navn'],['new','Nyeste']].map(([k, l]) => `<option value="${k}"${S.sort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
-  ${list.length ? `<div class="cards">${list.map(e => `<button class="tile" data-act="openEntry" data-v="${esc(e.id)}">${artEl(e.image, e.name, e.qty)}<span class="name">${esc(e.name)}</span><span class="tiny mut">${esc(e.setName)} · ${esc(e.localId)}${e.api === 'ja' ? ' · JP' : ''}</span><span class="row between small"><b>${unitValue(e) ? kr(value(e)) : '<span class="mut">–</span>'}</b><span class="tiny mut">${e.alert && (e.alert.below || e.alert.above) ? 'Alarm · ' : ''}${esc(e.coll === 'wish' ? 'Ønske' : e.coll === 'sale' ? 'Til salg' : '')}</span></span></button>`).join('')}</div>`
+  ${list.length ? `<div class="cards">${list.map(e => `<button class="tile" data-act="openEntry" data-v="${esc(e.id)}">${artEl(e.image, e.name, e.qty, e.grade)}<span class="name">${esc(e.name)}</span><span class="tiny mut">${esc(e.setName)} · ${esc(e.localId)}${e.api === 'ja' ? ' · JP' : ''}</span><span class="row between small"><b>${unitValue(e) ? kr(value(e)) : '<span class="mut">–</span>'}</b><span class="tiny mut">${e.alert && (e.alert.below || e.alert.above) ? 'Alarm · ' : ''}${esc(e.coll === 'wish' ? 'Ønske' : e.coll === 'sale' ? 'Til salg' : '')}</span></span></button>`).join('')}</div>`
   : `<div class="box col" style="align-items:flex-start"><h2>${all.length ? 'Ingen kort matcher' : 'Din samling er tom'}</h2><p class="mut" style="margin:0">Scan dit første kort med kameraet, eller søg efter det.</p><div class="row wrapr"><button class="btn" data-act="tab" data-v="scan">Scan kort</button><button class="btn ghost" data-act="tab" data-v="sog">Søg kort</button></div></div>`}
   </div>`;
 }
@@ -321,18 +357,42 @@ function vScan(){
 
 function vSog(){
   return `<div class="col"><h1>Søg kort</h1>${langPills()}
-  <input class="i" type="search" data-f="q" value="${esc(S.search.q)}" placeholder="${S.lang === 'ja' ? 'Navn på japansk, f.eks. ピカチュウ' : 'Navn, f.eks. Charizard eller Pikachu'}" aria-label="Søg efter kort" enterkeyhint="search">
+  <div class="row"><input class="i grow" type="search" data-f="q" value="${esc(S.search.q)}" placeholder="${S.lang === 'ja' ? 'Navn på japansk, f.eks. ピカチュウ' : 'Navn, f.eks. Charizard eller Pikachu'}" aria-label="Søg efter kort" enterkeyhint="search">${filterBtn('search', S.sf)}</div>
   <div id="results">${resultsHtml()}</div></div>`;
+}
+function searchView(){
+  const s = S.search, f = S.sf; if (!s.results) return [];
+  let list = s.results.filter(c => f.serie === 'all' || serieOf(c.id) === f.serie);
+  if (f.price !== 'all') list = list.filter(c => S.sp[ck(c.id, s.lang)] != null && inBand(S.sp[ck(c.id, s.lang)], f.price));
+  if (f.sort === 'priceDesc') list = list.slice().sort((a, b) => (S.sp[ck(b.id, s.lang)] || 0) - (S.sp[ck(a.id, s.lang)] || 0));
+  else if (f.sort === 'priceAsc') list = list.filter(c => S.sp[ck(c.id, s.lang)] > 0).sort((a, b) => S.sp[ck(a.id, s.lang)] - S.sp[ck(b.id, s.lang)]);
+  else if (f.sort === 'new'){ const idx = {}; (S.sets[s.lang] || []).forEach((x, i) => idx[x.id] = i); list = list.slice().sort((a, b) => (idx[setOf(b.id)] ?? -1) - (idx[setOf(a.id)] ?? -1)); }
+  return list;
+}
+const needPrices = () => S.sf.price !== 'all' || S.sf.sort.startsWith('price');
+let enrichN = 0;
+async function enrichSearch(){
+  const s = S.search; if (!s.results || !needPrices()) return;
+  const n = ++enrichN, lang = s.lang;
+  const todo = s.results.filter(c => S.sf.serie === 'all' || serieOf(c.id) === S.sf.serie).slice(0, 48).filter(c => S.sp[ck(c.id, lang)] == null);
+  if (!todo.length){ const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
+  s.enriching = true; const r0 = $('#results'); if (r0) r0.innerHTML = resultsHtml();
+  for (let i = 0; i < todo.length; i += 6){
+    await Promise.all(todo.slice(i, i + 6).map(async c => { try { const full = await getCard(c.id, lang); const p = prices(full); S.sp[ck(c.id, lang)] = p.cm != null ? p.cm * EUR_DKK : 0; } catch(e){ S.sp[ck(c.id, lang)] = 0; } }));
+    if (n !== enrichN) return;
+    const r = $('#results'); if (r) r.innerHTML = resultsHtml();
+  }
+  s.enriching = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml();
 }
 function resultsHtml(){
   const s = S.search;
   if (s.busy) return spinner('Søger …');
   if (s.err) return `<div class="note">${esc(s.err)}</div>`;
-  if (!s.results) return `<p class="small mut">${S.lang === 'ja' ? 'Skriv mindst 2 tegn. Japanske kort søges med japanske navne.' : 'Skriv mindst 3 bogstaver. Kortdata og billeder kommer fra TCGdex.'}</p>`;
-  if (!s.results.length) return `<p class="small mut">Ingen kort fundet.${S.lang === 'en' ? ' Tjek stavningen – navne er på engelsk.' : ''}</p>`;
-  return `<p class="small mut">${s.results.length}${s.results.length >= 120 ? '+' : ''} kort</p><div class="cards">${s.results.slice(0, 120).map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span></button>`).join('')}</div>`;
+  if (!s.results) return `<p class="small mut">${S.lang === 'ja' ? 'Skriv mindst 2 tegn. Japanske kort søges med japanske navne.' : 'Skriv mindst 3 bogstaver – eller vælg en sjældenhed under Filter.'}</p>`;
+  const list = searchView();
+  if (!list.length) return `${s.enriching ? spinner('Henter priser …') : ''}<p class="small mut">Ingen kort matcher.${filterCount(S.sf) ? ' Prøv at ændre filteret.' : S.lang === 'en' ? ' Tjek stavningen – navne er på engelsk.' : ''}</p>`;
+  return `<p class="small mut">${list.length}${s.results.length >= 120 && !filterCount(S.sf) ? '+' : ''} kort${s.enriching ? ' · henter priser …' : ''}</p><div class="cards">${list.slice(0, 120).map(c => { const p = S.sp[ck(c.id, s.lang)]; return `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span>${p > 0 ? `<b class="small">${kr(p)}</b>` : ''}</button>`; }).join('')}</div>`;
 }
-
 function vCard(){
   const {id, lang} = S.view, c = cached(id, lang);
   if (!c){ return `<div class="col">${back()}${spinner('Henter kortet …')}</div>`; }
@@ -345,9 +405,12 @@ function vCard(){
   <div class="col" style="gap:2px"><h1>${esc(c.name)}</h1><span class="small mut">${esc([c.set && c.set.name, c.localId + (c.set && c.set.cardCount && c.set.cardCount.official ? '/' + c.set.cardCount.official : ''), c.rarity, lang === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span>
   ${owned.length ? `<span class="small b up">Du har ${owned.reduce((a, e) => a + (+e.qty || 1), 0)} stk.</span>` : ''}</div>
   ${priceBox(c)}
+  ${gradedBox(c.name, c.localId, null)}
   <div class="box col"><h3>Tilføj til samling</h3>
   <div class="grid2"><label class="f">Samling<select class="i" id="aColl">${Object.keys(COLLS).map(k => `<option value="${k}">${COLLS[k]}</option>`).join('')}</select></label>
   <label class="f">Antal<input class="i" id="aQty" type="number" min="1" inputmode="numeric" value="1"></label></div>
+  <div class="grid2"><label class="f">Gradering<select class="i" id="aCo"><option value="">Ikke gradet</option>${GRADERS.map(g => `<option>${g}</option>`).join('')}</select></label>
+  <label class="f">Karakter<select class="i" id="aG">${GRADES.map(g => `<option>${g}</option>`).join('')}</select></label></div>
   <div class="grid2"><label class="f">Stand<select class="i" id="aCond">${opts(CONDS, 'Near Mint')}</select></label>
   <label class="f">Udgave<select class="i" id="aVar">${(vars.length ? vars : ['normal']).map(k => `<option value="${k}">${VARIANTS[k]}</option>`).join('')}</select></label></div>
   <div class="grid2"><label class="f">Sprog<select class="i" id="aLang">${opts(LANGS, lang === 'ja' ? 'Japansk' : 'Engelsk')}</select></label>
@@ -363,17 +426,21 @@ function vEntry(){
   const a = e.alert || {};
   return `<div class="col">${back('Samling')}
   <div class="big-art">${e.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((e.name||'?')[0])}</span><img src="${img(e.image,'high')}" alt="${esc(e.name)}" onerror="this.remove()"></div>` : artEl(null, e.name)}</div>
-  <div class="col" style="gap:2px"><h1>${esc(e.name)}</h1><span class="small mut">${esc([e.setName, e.localId + (e.official ? '/' + e.official : ''), e.rarity, VARIANTS[e.variant], e.api === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span></div>
+  <div class="col" style="gap:2px"><h1>${esc(e.name)}${e.grade ? ` <span class="gpill">${esc(gradeText(e.grade))}</span>` : ''}</h1><span class="small mut">${esc([e.setName, e.localId + (e.official ? '/' + e.official : ''), e.rarity, VARIANTS[e.variant], e.api === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span></div>
+  ${e.grade && !(+e.manual > 0) ? `<div class="note">Værdien er for et kort <b>uden</b> gradering. Sæt din egen værdi for dit ${esc(gradeText(e.grade))} under "Dit eksemplar" – se solgte priser under "Gradede priser".</div>` : ''}
   <div class="kpis"><div class="kpi"><span class="tiny mut">Betalt</span><b>${kr((+e.buy || 0) * (+e.qty || 1))}</b></div><div class="kpi"><span class="tiny mut">Værdi</span><b>${kr(value(e))}</b></div><div class="kpi"><span class="tiny mut">Gevinst</span><b class="${g >= 0 ? 'up' : 'down'}">${sgn(g)}</b></div></div>
   ${historyBox(e)}
   <div class="box col"><h3>Prisalarm</h3><p class="small mut" style="margin:0">Få besked i appen, når værdien pr. stk. kommer under eller over din grænse. Prisen tjekkes, når du åbner appen.</p>
   <div class="grid2"><label class="f">Under (kr)<input class="i" type="number" min="0" inputmode="numeric" data-a="below" value="${esc(a.below || '')}" placeholder="–"></label><label class="f">Over (kr)<input class="i" type="number" min="0" inputmode="numeric" data-a="above" value="${esc(a.above || '')}" placeholder="–"></label></div>
   ${a.below || a.above ? `<span class="tiny mut">Nu: ${kr(unitValue(e))} pr. stk.</span>` : ''}</div>
   ${c ? priceBox(c) : spinner('Henter priser …')}
+  ${gradedBox(e.name, e.localId, e.grade)}
   <div class="box col"><h3>Dit eksemplar</h3>
   <div class="pills" role="group" aria-label="Samling">${Object.keys(COLLS).map(k => `<button class="pill" data-act="move" data-v="${k}" aria-pressed="${e.coll === k}">${COLLS[k]}</button>`).join('')}</div>
   <div class="grid2"><label class="f">Antal<input class="i" type="number" min="1" inputmode="numeric" data-e="qty" value="${esc(e.qty || 1)}"></label>
   <label class="f">Købspris pr. stk.<input class="i" type="number" min="0" inputmode="numeric" data-e="buy" value="${esc(e.buy || '')}"></label></div>
+  <div class="grid2"><label class="f">Gradering<select class="i" data-gr="co"><option value="">Ikke gradet</option>${GRADERS.map(g => `<option${e.grade && e.grade.co === g ? ' selected' : ''}>${g}</option>`).join('')}</select></label>
+  <label class="f">Karakter<select class="i" data-gr="g" ${e.grade ? '' : 'disabled'}>${GRADES.map(g => `<option${e.grade && e.grade.g === g ? ' selected' : ''}>${g}</option>`).join('')}</select></label></div>
   <div class="grid2"><label class="f">Stand<select class="i" data-e="cond">${opts(CONDS, e.cond)}</select></label>
   <label class="f">Sprog<select class="i" data-e="lang">${opts(LANGS, e.lang)}</select></label></div>
   <label class="f">Egen værdi pr. stk. (kr) – overstyrer markedsprisen<input class="i" type="number" min="0" inputmode="numeric" data-e="manual" value="${esc(e.manual || '')}" placeholder="Tom = brug Cardmarket"></label>
@@ -627,7 +694,9 @@ function vHome(){
   const ch30 = then > 0 ? (nowV - then) / then * 100 : null;
   const pend = toConfirm().length, req = incomingReq().length, alerts = S.notes.filter(n => !n.read).length;
   const movers = held.filter(e => e.avg30 && e.eur).map(e => ({e, ch:(e.eur - e.avg30) / e.avg30 * 100})).sort((a, b) => Math.abs(b.ch) - Math.abs(a.ch)).slice(0, 3);
-  let pop = d ? d.popular.slice() : [];
+  const F = S.hf, okC = c => (F.serie === 'all' || serieOf(c.id) === F.serie) && inBand(c.eur * EUR_DKK, F.price);
+  let pop = d ? d.popular.filter(okC) : [];
+  const hotF = d ? d.hot.filter(okC) : [], setsF = d ? d.newSets.filter(x => F.serie === 'all' || serieOf(x.id + '-0') === F.serie) : [];
   if (H.mode === 'up') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(b) - chg(a));
   else if (H.mode === 'down') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(a) - chg(b));
   else pop.sort((a, b) => b.eur - a.eur);
@@ -644,15 +713,16 @@ function vHome(){
   ${H.err ? `<div class="note">${esc(H.err)} <button class="btn text" data-act="homeReload">Prøv igen</button></div>` : ''}
   ${!d && H.loading ? spinner('Henter nyheder …') : ''}
   ${d ? `
-  <section class="col" style="gap:8px"><div class="row between"><h2>Nye jagtkort</h2><span class="tiny mut">Fra de nyeste sæt</span></div>
-    <div class="hscroll" role="list">${d.hot.length ? d.hot.map(miniCard).join('') : '<span class="small mut">Ingen prisdata endnu for de nyeste sæt.</span>'}</div></section>
-  <section class="col" style="gap:8px"><h2>Populære kort</h2>
+  <div class="row between"><span class="small mut">${filterCount(F) ? 'Filter er slået til' : 'Nyheder og priser'}</span>${filterBtn('home', F)}</div>
+  ${F.hot !== false ? `<section class="col" style="gap:8px"><div class="row between"><h2>Nye jagtkort</h2><span class="tiny mut">Fra de nyeste sæt</span></div>
+    <div class="hscroll" role="list">${hotF.length ? hotF.map(miniCard).join('') : '<span class="small mut">Ingen kort matcher.</span>'}</div></section>` : ''}
+  ${F.pop !== false ? `<section class="col" style="gap:8px"><h2>Populære kort</h2>
     <div class="pills" role="group" aria-label="Sortér populære kort"><button class="pill" data-act="homeMode" data-v="value" aria-pressed="${H.mode === 'value'}">Mest værdifulde</button><button class="pill" data-act="homeMode" data-v="up" aria-pressed="${H.mode === 'up'}">Stiger mest</button><button class="pill" data-act="homeMode" data-v="down" aria-pressed="${H.mode === 'down'}">Falder mest</button></div>
-    <div class="hscroll" role="list">${pop.map(miniCard).join('')}</div>
-    <span class="tiny mut">Priser er Cardmarket trend omregnet til kroner. Ændringen er i forhold til 30-dages gennemsnittet.</span></section>
-  <section class="col" style="gap:8px"><h2>Nyeste sæt</h2>
-    <div class="hscroll" role="list">${d.newSets.map(s => `<button class="hset" data-act="openSet" data-v="${esc(s.id)}" data-l="en"><span class="hset-logo">${s.logo ? `<img src="${esc(s.logo)}.png" alt="" loading="lazy" onerror="this.remove()">` : ''}<span>${esc(s.name)}</span></span><span class="tiny mut">${esc(s.serie || '')}</span><span class="tiny">${esc(fmtDate(s.date))} · ${esc(s.official || '?')} kort</span></button>`).join('')}</div></section>
-  ${movers.length ? `<section class="col" style="gap:8px"><h2>Dine kort, der bevæger sig</h2>${movers.map(m => `<button class="li" data-act="openEntry" data-v="${esc(m.e.id)}">${artEl(m.e.image, m.e.name)}<div class="grow"><div class="b">${esc(m.e.name)}</div><div class="tiny mut">${esc(m.e.setName)} · ${kr(unitValue(m.e))}</div></div><b class="nw ${m.ch >= 0 ? 'up' : 'down'}">${pct(m.ch)}</b></button>`).join('')}</section>` : ''}
+    <div class="hscroll" role="list">${pop.length ? pop.map(miniCard).join('') : '<span class="small mut">Ingen kort matcher.</span>'}</div>
+    <span class="tiny mut">Priser er Cardmarket trend for kort uden gradering, omregnet til kroner. Ændringen er i forhold til 30-dages gennemsnittet.</span></section>` : ''}
+  ${F.sets !== false ? `<section class="col" style="gap:8px"><h2>Nyeste sæt</h2>
+    <div class="hscroll" role="list">${setsF.length ? '' : '<span class="small mut">Ingen sæt matcher.</span>'}${setsF.map(s => `<button class="hset" data-act="openSet" data-v="${esc(s.id)}" data-l="en"><span class="hset-logo">${s.logo ? `<img src="${esc(s.logo)}.png" alt="" loading="lazy" onerror="this.remove()">` : ''}<span>${esc(s.name)}</span></span><span class="tiny mut">${esc(s.serie || '')}</span><span class="tiny">${esc(fmtDate(s.date))} · ${esc(s.official || '?')} kort</span></button>`).join('')}</div></section>` : ''}
+  ${movers.length && F.mine !== false ? `<section class="col" style="gap:8px"><h2>Dine kort, der bevæger sig</h2>${movers.map(m => `<button class="li" data-act="openEntry" data-v="${esc(m.e.id)}">${artEl(m.e.image, m.e.name)}<div class="grow"><div class="b">${esc(m.e.name)}</div><div class="tiny mut">${esc(m.e.setName)} · ${kr(unitValue(m.e))}</div></div><b class="nw ${m.ch >= 0 ? 'up' : 'down'}">${pct(m.ch)}</b></button>`).join('')}</section>` : ''}
   <section class="col" style="gap:8px"><h2>Populære sæt</h2>
     <div class="grid2">${d.popSets.map(s => `<button class="li" data-act="openSet" data-v="${esc(s.id)}" data-l="en" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${esc(s.name)}</b><span class="tiny mut">${esc(s.official || '?')} kort${s.total > s.official ? ' + ' + (s.total - s.official) + ' ekstra' : ''}</span></button>`).join('')}</div></section>
   <p class="tiny mut" style="margin:0">Opdateret ${esc(new Date(d.t).toLocaleString('da-DK', {hour:'2-digit', minute:'2-digit', day:'numeric', month:'short'}))} · <button class="btn text tiny" data-act="homeReload" style="min-height:32px;padding:0">Opdater nu</button></p>` : ''}
@@ -666,7 +736,7 @@ function render(){
   let html;
   if (v){ html = v.type === 'card' ? vCard() : v.type === 'entry' ? vEntry() : v.type === 'set' ? vSet() : v.type === 'sell' ? vSell() : v.type === 'receipt' ? vReceipt() : v.type === 'friend' ? vFriend() : ''; }
   else html = ({home:vHome, scan:vScan, sog:vSog, saet:vSaet, stat:vStat, venner:vVenner, kvit:vKvit, profil:vProfil, noter:vNoter})[S.tab]?.() ?? vSamling();
-  app.innerHTML = html;
+  app.innerHTML = html + filterSheet();
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-current', !v && b.dataset.v === S.tab ? 'page' : 'false'));
   const vid = $('#vid'); if (vid && stream){ vid.srcObject = stream; vid.play().catch(() => {}); }
   updateBadges();
@@ -784,19 +854,25 @@ function doSearch(q){
   clearTimeout(searchT);
   const s = S.search; s.q = q; s.lang = S.lang;
   const min = S.lang === 'ja' ? 2 : 3;
-  if (q.trim().length < min){ s.results = null; s.err = ''; s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
+  if (q.trim().length < min && !S.sf.rarity){ s.results = null; s.err = ''; s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
   searchT = setTimeout(async () => {
     const n = ++searchN, lang = S.lang; s.busy = true; s.err = ''; const r0 = $('#results'); if (r0) r0.innerHTML = resultsHtml();
     try {
-      const [res, sets] = await Promise.all([api('/cards?name=' + encodeURIComponent(q.trim()), lang), getSets(lang).catch(() => [])]);
+      const params = [];
+      if (q.trim().length >= min) params.push('name=' + encodeURIComponent(q.trim()));
+      if (S.sf.rarity) params.push('rarity=' + encodeURIComponent(S.sf.rarity));
+      if (!params.some(p => p.startsWith('name='))) params.push('pagination:itemsPerPage=250');
+      const [res, sets] = await Promise.all([api('/cards?' + params.join('&'), lang), getSets(lang).catch(() => [])]);
       if (n !== searchN) return;
       const names = {}; (sets || []).forEach(x => names[x.id] = x.name);
       const list = (res || []).filter(c => lang !== 'en' || !isPocket(c.id)).map(c => ({...c, setName: names[setOf(c.id)] || ''}));
       s.results = list.filter(c => c.image).concat(list.filter(c => !c.image)); s.lang = lang;
     } catch(e){ if (n !== searchN) return; s.err = 'Kunne ikke søge lige nu. Tjek din internetforbindelse.'; s.results = null; }
     s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml();
+    enrichSearch();
   }, 400);
 }
+async function loadRarities(lang){ if (S.rarities[lang]) return; try { S.rarities[lang] = (await api('/rarities', lang)) || []; } catch(e){ S.rarities[lang] = []; } if (S.sheet) render(); }
 let fqT;
 function friendSearch(q){
   S.fq = q; clearTimeout(fqT);
@@ -840,6 +916,7 @@ function addCard(){
   const e = {id:uid(), cardId:c.id, api:lang || 'en', name:c.name, setId:c.set && c.set.id, setName:c.set && c.set.name, localId:c.localId, official:c.set && c.set.cardCount && c.set.cardCount.official,
     image:c.image || '', rarity:c.rarity || '', coll:$('#aColl').value, qty:Math.max(1, parseInt($('#aQty').value) || 1), cond:$('#aCond').value, variant:$('#aVar').value, lang:$('#aLang').value,
     buy:Math.max(0, parseInt($('#aBuy').value) || 0), manual:0, note:'', added:new Date().toISOString()};
+  if ($('#aCo').value){ e.grade = {co:$('#aCo').value, g:$('#aG').value}; e.cond = 'Gradet (PSA/BGS/CGC)'; }
   applyPrice(e, c);
   S.data.entries.push(e); save();
   toast(e.name + ' er lagt i ' + COLLS[e.coll] + '.');
@@ -910,7 +987,7 @@ document.addEventListener('click', async ev => {
     case 'tab': if (v !== 'scan') stopCam(); S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'scan' && S.scan.phase !== 'result') S.scan = {phase:'idle'}; if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); if (v === 'scan' && S.scan.phase === 'idle' && localStorage.getItem('kortscanner.camok')) startCam(); return;
     case 'back': if (S.view && S.view.type === 'sell'){ const id = S.sell.id; S.sell = null; go({type:'entry', id}); } else if (S.view) go(null); else { S.tab = 'home'; render(); window.scrollTo(0, 0); } return;
     case 'coll': S.coll = v; break;
-    case 'lang': S.lang = v; S.search = {q:'', results:null, busy:false, err:''}; break;
+    case 'lang': S.lang = v; S.search = {q:'', results:null, busy:false, err:''}; S.sf.rarity = ''; break;
     case 'refresh': refreshPrices(true); return;
     case 'openEntry': openEntry(v); return;
     case 'openCard': openCard(v, b.dataset.l); return;
@@ -962,6 +1039,11 @@ document.addEventListener('click', async ev => {
     case 'export': exportData(); return;
     case 'logout': stopCam(); user = null; S.data = {entries:[], sold:[]}; S.profile = null; await sb.auth.signOut(); return;
     case 'noop': return;
+    case 'openSheet': S.sheet = v; if (v === 'search') loadRarities(S.lang); break;
+    case 'closeSheet': S.sheet = null; render(); if (S.tab === 'sog' && !S.view) { if (S.search.q || S.sf.rarity) doSearch(S.search.q); } return;
+    case 'fset': { const f = b.dataset.w === 'search' ? S.sf : S.hf; f[b.dataset.k] = v; break; }
+    case 'ftoggle': S.hf[b.dataset.k] = S.hf[b.dataset.k] === false; break;
+    case 'resetFilter': if (v === 'search') S.sf = {serie:'all', rarity:'', price:'all', sort:'rel'}; else S.hf = {serie:'all', price:'all', hot:true, pop:true, sets:true, mine:true}; break;
     case 'homeReload': loadHome(true); return;
     case 'homeMode': S.home.mode = v; break;
     default: return;
@@ -991,6 +1073,13 @@ document.addEventListener('change', ev => {
     const e = entry(S.view.id); e.alert = e.alert || {}; e.alert[t.dataset.a] = Math.max(0, parseInt(t.value) || 0); e.alert.last = null;
     if (!e.alert.below && !e.alert.above) delete e.alert; else checkAlert(e);
     save(); render(); toast(e.alert ? 'Prisalarmen er gemt.' : 'Prisalarmen er slået fra.');
+  }
+  else if (t.dataset.f === 'sfRarity'){ S.sf.rarity = t.value; render(); }
+  else if (t.dataset.gr && S.view && S.view.type === 'entry'){
+    const e = entry(S.view.id);
+    if (t.dataset.gr === 'co'){ if (t.value){ e.grade = {co:t.value, g:(e.grade && e.grade.g) || '10'}; e.cond = 'Gradet (PSA/BGS/CGC)'; } else { delete e.grade; if (e.cond === 'Gradet (PSA/BGS/CGC)') e.cond = 'Near Mint'; } }
+    else if (e.grade) e.grade.g = t.value;
+    save(); render();
   }
   else if (t.dataset.p === 'display_name') saveProfile({display_name: t.value.trim().slice(0, 40) || null});
   else if (t.dataset.s === 'price' && S.sell) render();

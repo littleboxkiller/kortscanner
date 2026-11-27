@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '13';
+const APP_VERSION = '15';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -410,7 +410,7 @@ function vScan(){
   } else if (sc.phase === 'result'){
     body = `${sc.cands.length ? `<h2>${sc.cands.length === 1 ? 'Er det dette kort?' : 'Hvilket kort er det?'}</h2>
     ${sc.guess ? `<p class="small mut" style="margin:0">Læst: ${esc([sc.guess.name, sc.guess.num].filter(Boolean).join(' · '))}</p>` : ''}
-    <div class="cards">${sc.cands.map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(sc.lang || 'en')}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || '')}${c.localId ? ' · ' + esc(c.localId) : ''}</span></button>`).join('')}</div>`
+    <div class="cards">${sc.cands.map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(sc.lang || 'en')}"${c.best ? ' style="outline:3px solid var(--acc)"' : ''}>${artEl(c.image, c.name)}${c.best ? '<span class="tiny b" style="color:var(--acc)">Bedste match</span>' : ''}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || '')}${c.localId ? ' · ' + esc(c.localId) : ''}</span></button>`).join('')}</div>`
     : `<div class="box col"><h2>Kortet blev ikke fundet</h2><p class="small" style="margin:0">${esc(sc.msg || '')}</p>
       ${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede" style="width:140px;border-radius:8px;align-self:center">` : ''}
       <ul class="small mut" style="margin:0;padding-left:18px"><li>Tag kortet ud af plastiklommen (genskin gør tallene ulæselige)</li><li>Hold telefonen stille på normal afstand, så billedet er skarpt</li><li>Markér kun selve kortet – ikke bordet omkring</li><li>Virker det ikke, så søg på navnet i stedet</li></ul></div>`}
@@ -954,6 +954,14 @@ function guessNumber(text){
   if (!m) return null;
   return {pre:(m[1] || '').toUpperCase(), local:m[2], total:+m[4], text:(m[1] || '') + m[2] + '/' + (m[3] || '') + m[4]};
 }
+// promo-kort har numre uden skråstreg, f.eks. DP45, SM60, SWSH050, XY121, SVP 085
+function guessPromo(text){
+  const t = String(text || '').toUpperCase().replace(/[O](?=\d)/g, '0');
+  const m = t.match(/(?:^|[^A-Z0-9])(DP|HGSS|BW|XY|SM|SWSH|SVP|NP|POP)\s?[-#]?\s?(\d{1,3})(?![0-9])/);
+  if (!m) return null;
+  return {pre:m[1], local:String(+m[2]), total:0, promo:true, text:m[1] + m[2]};
+}
+const readNum = t => guessNumber(t) || guessPromo(t);
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z]/g, '');
 function nameScore(a, b){
   a = norm(a); b = norm(b); if (!a || !b) return 0;
@@ -973,6 +981,32 @@ function quality(canvas){
     return {bright:mean, sharp: m ? lap / m : 0};
   } catch(e){ return null; }
 }
+// billed-sammenligning: kortets tegning (øverste halvdel) skaleres ned til 12x9 farvefelter og sammenlignes
+function artVec(src, w, h){
+  const c = document.createElement('canvas'); c.width = 12; c.height = 9; const g = c.getContext('2d');
+  g.drawImage(src, w * 0.08, h * 0.11, w * 0.84, h * 0.42, 0, 0, 12, 9);
+  const d = g.getImageData(0, 0, 12, 9).data, v = new Float32Array(12 * 9 * 3);
+  let m = 0; for (let i = 0, j = 0; i < d.length; i += 4){ v[j++] = d[i]; v[j++] = d[i+1]; v[j++] = d[i+2]; }
+  for (const x of v) m += x; m /= v.length; let sd = 0; for (const x of v) sd += (x - m) ** 2; sd = Math.sqrt(sd / v.length) || 1;
+  for (let i = 0; i < v.length; i++) v[i] = (v[i] - m) / sd;
+  return v;
+}
+async function visualRank(canvas, cands, onStep){
+  if (cands.length < 2) return cands;
+  const me = artVec(canvas, canvas.width, canvas.height);
+  const list = cands.slice(0, 150), dist = {};
+  for (let i = 0; i < list.length; i += 12){
+    await Promise.all(list.slice(i, i + 12).map(async c => {
+      if (!c.image) return;
+      try { const b = await fetch(c.image + '/low.webp', {mode:'cors'}).then(r => r.ok ? r.blob() : null); if (!b) return; const bm = await createImageBitmap(b); const v = artVec(bm, bm.width, bm.height); let d = 0; for (let k = 0; k < v.length; k++) d += (v[k] - me[k]) ** 2; dist[c.id] = d; } catch(e){}
+    }));
+    if (onStep) onStep(Math.min(list.length, i + 12), list.length);
+  }
+  if (!Object.keys(dist).length) return cands;
+  const ranked = list.slice().sort((a, b) => (dist[a.id] ?? 1e9) - (dist[b.id] ?? 1e9));
+  if (ranked[0] && dist[ranked[0].id] != null) ranked[0].best = true;
+  return ranked.concat(cands.slice(150));
+}
 async function identify(canvas, photo){
   const lang = S.lang;
   S.scan = {phase:'busy', img:canvas.toDataURL('image/jpeg', 0.7), msg:'Gør kortlæseren klar (første gang tager det lidt tid) …', lang}; render();
@@ -981,14 +1015,14 @@ async function identify(canvas, photo){
     S.scan.msg = 'Læser kortet …'; render();
     const bottom = await w.recognize(region(canvas, 0.86, 1));
     const top = lang === 'en' ? await w.recognize(region(canvas, 0, 0.16)) : {data:{text:''}};
-    let num = guessNumber(bottom.data.text), name = guessName(top.data.text);
-    if (!num){ const left = await w.recognize(region(canvas, 0.84, 1, 0, 0.55)); num = guessNumber(left.data.text); }
-    if (!num){ const z = await w.recognize(region(canvas, 0.88, 0.99, 0, 0.45, 'grayscale(1) contrast(2.5) brightness(1.1)', 2200)); num = guessNumber(z.data.text); }
+    let num = readNum(bottom.data.text), name = guessName(top.data.text); const topRaw = top.data.text || '';
+    if (!num){ const left = await w.recognize(region(canvas, 0.84, 1, 0, 0.55)); num = readNum(left.data.text); }
+    if (!num){ const z = await w.recognize(region(canvas, 0.88, 0.99, 0, 0.45, 'grayscale(1) contrast(2.5) brightness(1.1)', 2200)); num = readNum(z.data.text); }
     if (!num && photo){
       // telefonens eget foto: kortet ligger et sted i billedet, så hele billedet læses
       S.scan.msg = 'Læser hele billedet …'; render();
       const all = await w.recognize(region(canvas, 0, 1, 0, 1, 'grayscale(1) contrast(1.8)', Math.min(2400, Math.max(1600, canvas.width))));
-      num = guessNumber(all.data.text);
+      num = readNum(all.data.text);
       if (!name) name = guessName(all.data.text);
     }
     S.scan.msg = 'Finder kortet …'; render();
@@ -999,7 +1033,12 @@ async function identify(canvas, photo){
       const locals = [...new Set([num.pre + num.local, num.pre + String(+num.local), num.pre + num.local.padStart(3, '0'), num.local])];
       const tries = []; hits.slice(0, 30).forEach(s => locals.forEach(l => tries.push({s, l})));
       const found = await Promise.all(tries.map(t => api('/sets/' + encodeURIComponent(t.s.id) + '/' + encodeURIComponent(t.l), lang).catch(() => null)));
-      if (num.pre){ const byId = await api('/cards?localId=eq:' + encodeURIComponent(num.pre + num.local), lang).catch(() => null); for (const b of (byId || []).filter(x => !isPocket(x.id)).slice(0, 6)){ const full = await getCard(b.id, lang).catch(() => null); if (full) found.push(full); } }
+      if (num.pre){
+        for (const l of [...new Set([num.pre + num.local, num.pre + num.local.padStart(2, '0'), num.pre + num.local.padStart(3, '0')])]){
+          const byId = await api('/cards?localId=eq:' + encodeURIComponent(l), lang).catch(() => null);
+          for (const b of (byId || []).filter(x => !isPocket(x.id)).slice(0, 6)){ const full = await getCard(b.id, lang).catch(() => null); if (full) found.push(full); }
+        }
+      }
       const seen = new Set();
       found.forEach(c => { if (c && !seen.has(c.id)){ seen.add(c.id); S.cardCache[ck(c.id, lang)] = c; cands.push({id:c.id, name:c.name, image:c.image, setName:c.set && c.set.name, localId:c.localId}); } });
       if (name) cands.sort((a, b) => nameScore(name, b.name) - nameScore(name, a.name));
@@ -1010,13 +1049,17 @@ async function identify(canvas, photo){
       for (const q of [name, words.slice(0, 2).join(' '), words[0]].filter((x, i, a) => x && a.indexOf(x) === i)){
         const r = await api('/cards?name=' + encodeURIComponent(q), lang).catch(() => null);
         let list = (r || []).filter(c => !isPocket(c.id));
-        // kunne appen læse antallet i sættet (f.eks. /147), så vis de kort først, hvis nummer passer
-        if (num && list.length) list.sort((a, b) => (b.localId === num.local) - (a.localId === num.local));
-        if (list.length){ cands = list.slice(0, 30).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId})); break; }
+        // rangér efter hvor godt kortets fulde navn passer med det, der står øverst på kortet (f.eks. "Charizard G LV.X")
+        const raw = ' ' + topRaw.toUpperCase().replace(/[^A-Z0-9]+/g, ' ') + ' ';
+        const sc = c => { const parts = String(c.name).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().split(' '); let v = 0; parts.forEach(w => { if (raw.includes(' ' + w + ' ')) v += w.length >= 3 ? 3 : 2; else v -= 1; }); if (num && (c.localId === num.local || c.localId === num.pre + num.local)) v += 20; return v; };
+        list.sort((a, b) => sc(b) - sc(a));
+        if (list.length){ cands = list.slice(0, 150).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId})); break; }
       }
     }
     const q = quality(canvas);
     const why = !q ? '' : q.bright < 55 ? ' Billedet er for mørkt – find mere lys.' : q.bright > 235 ? ' Billedet er overbelyst – undgå genskin fra lampen.' : q.sharp < 40 ? ' Billedet er uskarpt – hold telefonen stille og lidt længere væk, så den kan fokusere.' : '';
+    if (cands.length > 1){ S.scan.msg = 'Sammenligner med kortbilleder …'; render(); cands = await visualRank(canvas, cands, (a, b) => { S.scan.msg = `Sammenligner med kortbilleder (${a}/${b}) …`; const m = document.querySelector('#app .spin'); if (m && m.parentElement) m.parentElement.lastChild.textContent = S.scan.msg; }); }
+    cands = cands.slice(0, 40);
     S.scan = {phase:'result', lang, cands, img:S.scan.img, guess:{name, num: num && num.text},
       msg: (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
     if (cands.length === 1){ go({type:'card', id:cands[0].id, lang}); return; }
@@ -1319,7 +1362,7 @@ async function enterApp(u){
   S.view = null; S.tab = 'home'; render(); loadHome(); loadFx();
   if (!entered){
     entered = true;
-    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
   }
   try { await syncDown(); render(); } catch(e){ S.syncErr = true; render(); toast('Kunne ikke hente din samling fra skyen. Du ser den, der er gemt på telefonen.'); }
   loadSocial();

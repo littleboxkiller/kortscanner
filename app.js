@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '18';
+const APP_VERSION = '19';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -525,7 +525,7 @@ function vCard(){
   const owned = S.data.entries.filter(e => e.cardId === id && (e.api || 'en') === (lang || 'en'));
   const vars = Object.keys(c.variants || {}).filter(k => c.variants[k] && VARIANTS[k]);
   const p = prices(c);
-  return `<div class="col">${back()}
+  return `<div class="col"><div class="row between" style="align-items:center">${back()}<button class="plusbtn" data-act="quickAdd" aria-label="Læg i Binder" title="Læg i Binder"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
   <div class="big-art">${c.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((c.name||'?')[0])}</span><img src="${img(c.image,'high')}" alt="${esc(c.name)}" onerror="this.remove()"></div>` : artEl(null, c.name)}</div>
   <div class="col" style="gap:2px"><h1>${esc(c.name)}</h1><span class="small mut">${esc([c.set && c.set.name, c.localId + (c.set && c.set.cardCount && c.set.cardCount.official ? '/' + c.set.cardCount.official : ''), c.rarity, lang === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span>
   ${owned.length ? `<span class="small b up">Du har ${owned.reduce((a, e) => a + (+e.qty || 1), 0)} stk.</span>` : ''}</div>
@@ -549,7 +549,7 @@ function vEntry(){
   if (c) c._lang = e.api;
   const g = value(e) - (+e.buy || 0) * (+e.qty || 1);
   const a = e.alert || {};
-  return `<div class="col">${back('Samling')}
+  return `<div class="col"><div class="row between" style="align-items:center">${back('Samling')}<button class="plusbtn" data-act="plusOne" aria-label="Læg ét kort mere i samlingen" title="Læg ét kort mere i samlingen"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
   <div class="big-art">${e.image ? `<div class="art"><span class="ph" aria-hidden="true">${esc((e.name||'?')[0])}</span><img src="${img(e.image,'high')}" alt="${esc(e.name)}" onerror="this.remove()"></div>` : artEl(null, e.name)}</div>
   <div class="col" style="gap:2px"><h1>${esc(e.name)}${e.grade ? ` <span class="gpill">${esc(gradeText(e.grade))}</span>` : ''}</h1><span class="small mut">${esc([e.setName, e.localId + (e.official ? '/' + e.official : ''), e.rarity, VARIANTS[e.variant], e.api === 'ja' ? 'Japansk' : ''].filter(Boolean).join(' · '))}</span></div>
   ${e.grade && !(+e.manual > 0) ? (+e.gusd > 0 ? `<div class="note">Værdien er hvad ${esc(gradeText(e.grade))}-kort sælges for (median af solgte). Du kan sætte din egen værdi under "Dit eksemplar".</div>` : `<div class="note">Der er ingen gradet pris for dit ${esc(gradeText(e.grade))} endnu, så værdien er for et kort <b>uden</b> gradering. Sæt din egen værdi under "Dit eksemplar".</div>`) : ''}
@@ -1242,6 +1242,16 @@ async function openFriend(id){
   S.friendView = {id, coll:'have', entries:(data || []), hidden: !error && (!data || !data.length) && S.profiles[id] && S.profiles[id].share_collection === false};
   if (S.view && S.view.id === id) render();
 }
+// hurtig tilføjelse med "+" øverst til højre: 1 stk. i Binderen, ikke gradet, Near Mint
+function quickAdd(){
+  const {id, lang} = S.view, c = cached(id, lang); if (!c) return;
+  const vars = Object.keys(c.variants || {}).filter(k => c.variants[k] && VARIANTS[k]);
+  const e = {id:uid(), cardId:c.id, api:lang || 'en', name:c.name, setId:c.set && c.set.id, setName:c.set && c.set.name, localId:c.localId, official:c.set && c.set.cardCount && c.set.cardCount.official,
+    image:c.image || '', rarity:c.rarity || '', coll:'binder', qty:1, cond:'Near Mint', variant:vars[0] || 'normal', lang:lang === 'ja' ? 'Japansk' : 'Engelsk', buy:0, manual:0, note:'', added:new Date().toISOString()};
+  applyPrice(e, c);
+  S.data.entries.push(e); save(); render();
+  toast(c.name + ' er lagt i Binderen.');
+}
 function addCard(){
   const {id, lang} = S.view, c = cached(id, lang); if (!c) return;
   const e = {id:uid(), cardId:c.id, api:lang || 'en', name:c.name, setId:c.set && c.set.id, setName:c.set && c.set.name, localId:c.localId, official:c.set && c.set.cardCount && c.set.cardCount.official,
@@ -1331,6 +1341,8 @@ document.addEventListener('click', async ev => {
     case 'recrop': if (cropSrc){ const d = Math.min(1, 1100 / Math.max(cropSrc.width, cropSrc.height)), c2 = document.createElement('canvas'); c2.width = Math.round(cropSrc.width * d); c2.height = Math.round(cropSrc.height * d); c2.getContext('2d').drawImage(cropSrc, 0, 0, c2.width, c2.height); S.scan = {phase:'crop', img:c2.toDataURL('image/jpeg', 0.85), box:null}; } render(); return;
     case 'toSearch': S.tab = 'sog'; S.view = null; render(); return;
     case 'add': addCard(); return;
+    case 'quickAdd': quickAdd(); return;
+    case 'plusOne': { const e = entry(S.view.id); if (e){ e.qty = (+e.qty || 1) + 1; save(); render(); toast('Du har nu ' + e.qty + ' stk. af ' + e.name + '.'); } return; }
     case 'move': entry(S.view.id).coll = v; save(); break;
     case 'del': if (!S.delArm){ S.delArm = true; break; } S.data.entries = S.data.entries.filter(e => e.id !== S.view.id); save(); toast('Kortet er slettet.'); go(null); return;
     case 'sell': { const e = entry(S.view.id); S.sell = {id:e.id, price:String(Math.round(unitValue(e)) || ''), qty:1, mode:'app', buyer:'', q:'', hits:[], buyerName:'', email:'', method:'Kontant', got:false}; go({type:'sell', id:e.id}); return; }

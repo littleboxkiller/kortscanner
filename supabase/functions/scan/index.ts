@@ -20,7 +20,7 @@ Answer ONLY with JSON:
  "notes": "short reason"}
 If there is no Pokémon card in the image, answer {"name": "", "confidence": 0}.`;
 
-const MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const MODELS = (Deno.env.get('GEMINI_MODELS') || 'gemini-3.5-flash,gemini-flash-latest,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-flash-lite-latest').split(',');
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -28,6 +28,12 @@ Deno.serve(async (req) => {
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json({ error: 'missing_key' });
     const body = await req.json().catch(() => ({}));
+    if (body && body.listModels) {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+      const j = await r.json().catch(() => null);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return json({ status: r.status, models: ((j && j.models) || []).filter((m: any) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m: any) => m.name), err: j && j.error });
+    }
     const img = String((body && body.image) || '').replace(/^data:image\/\w+;base64,/, '');
     if (!img || img.length > 4_000_000) return json({ error: 'bad_image' }, 400);
     let last = '';
@@ -40,10 +46,10 @@ Deno.serve(async (req) => {
           generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
         }),
       });
-      if (r.status === 404) { last = 'model_404 ' + model; continue; }
+      if (r.status === 404 || r.status === 503) { last += 'model_' + r.status + ' ' + model + '; '; continue; }
       if (r.status === 429) return json({ error: 'quota' });
       const j = await r.json().catch(() => null);
-      if (!r.ok) { last = 'http_' + r.status + ' ' + JSON.stringify(j).slice(0, 200); continue; }
+      if (!r.ok) { last += model + ' http_' + r.status + ' ' + JSON.stringify(j).slice(0, 200); continue; }
       const text = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts.map((p: { text?: string }) => p.text || '').join('');
       let card = null;
       try { card = JSON.parse(String(text).replace(/^```json|```$/g, '').trim()); } catch (_) { last = 'parse'; continue; }

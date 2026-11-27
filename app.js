@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '24';
+const APP_VERSION = '25';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -1206,7 +1206,7 @@ function lev(a, b, max){
 function wordScore(t, w){
   if (t === w) return 10;
   if (t.length >= 2 && w.startsWith(t)) return t.length >= 3 ? 8 : 5;
-  if (t.length >= 4){ const m = t.length >= 7 ? 2 : 1; if (lev(t, w, m) <= m) return 6; if (w.length > t.length && lev(t, w.slice(0, t.length), 1) <= 1) return 5; }
+  if (t.length >= 4 && t[0] === w[0]){ const m = t.length >= 7 ? 2 : 1; if (lev(t, w, m) <= m) return 6; if (t.length >= 5 && w.length > t.length && lev(t, w.slice(0, t.length), 1) <= 1) return 5; }
   return 0;
 }
 const KEY_ALIAS = {lvx:['lv','x'], 'lv.x':['lv','x'], vmax:['vmax'], vstar:['vstar'], fullart:[], shiny:['shiny'], delta:['delta']};

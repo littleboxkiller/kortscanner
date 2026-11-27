@@ -81,3 +81,6 @@ section h2{font-size:19px}
 
 .cam.flash::after{content:'';position:absolute;inset:0;background:#fff;opacity:.85;animation:camflash .25s ease-out forwards}
 @keyframes camflash{to{opacity:0}}
+.cropwrap{position:relative;touch-action:none;user-select:none;-webkit-user-select:none;border-radius:16px;overflow:hidden;background:#050608}
+.cropwrap img{display:block;width:100%;height:auto;pointer-events:none}
+.cropbox{position:absolute;border:3px solid var(--acc);border-radius:8px;box-shadow:0 0 0 2000px rgba(0,0,0,.5);pointer-events:none}

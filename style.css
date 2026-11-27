@@ -78,3 +78,6 @@ section h2{font-size:19px}
 .fcount{background:var(--acc);color:var(--accInk);border-radius:99px;padding:0 7px;font-size:12px;font-weight:800}
 .sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:20}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:var(--bg);border-radius:22px 22px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom));max-height:85vh;overflow-y:auto;display:flex;flex-direction:column;gap:16px;max-width:640px;margin:0 auto}
+
+.cam.flash::after{content:'';position:absolute;inset:0;background:#fff;opacity:.85;animation:camflash .25s ease-out forwards}
+@keyframes camflash{to{opacity:0}}

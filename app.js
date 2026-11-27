@@ -405,7 +405,9 @@ function vScan(){
     body = `${sc.cands.length ? `<h2>${sc.cands.length === 1 ? 'Er det dette kort?' : 'Hvilket kort er det?'}</h2>
     ${sc.guess ? `<p class="small mut" style="margin:0">Læst: ${esc([sc.guess.name, sc.guess.num].filter(Boolean).join(' · '))}</p>` : ''}
     <div class="cards">${sc.cands.map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(sc.lang || 'en')}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || '')}${c.localId ? ' · ' + esc(c.localId) : ''}</span></button>`).join('')}</div>`
-    : `<div class="box col"><h2>Kortet blev ikke fundet</h2><p class="small mut" style="margin:0">${esc(sc.msg || 'Prøv igen med kortet fladt, godt lys og nummeret i bunden skarpt.')}</p></div>`}
+    : `<div class="box col"><h2>Kortet blev ikke fundet</h2><p class="small" style="margin:0">${esc(sc.msg || '')}</p>
+      ${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede" style="width:140px;border-radius:8px;align-self:center">` : ''}
+      <ul class="small mut" style="margin:0;padding-left:18px"><li>Læg kortet fladt på et mørkt bord</li><li>Fyld rammen ud med kortet</li><li>Nummeret nederst (f.eks. 223/197) skal være skarpt</li><li>Virker det ikke, så søg på navnet i stedet</li></ul></div>`}
     <div class="row wrapr"><button class="btn" data-act="rescan">Scan igen</button><button class="btn ghost" data-act="toSearch">Søg i stedet</button></div>`;
   } else if (sc.phase === 'nocam'){
     body = `<div class="box col"><h2>Kameraet kunne ikke startes</h2><p class="small mut" style="margin:0">${esc(sc.msg)}</p></div>
@@ -829,9 +831,15 @@ function render(){
   let html;
   if (v){ html = v.type === 'card' ? vCard() : v.type === 'entry' ? vEntry() : v.type === 'set' ? vSet() : v.type === 'sell' ? vSell() : v.type === 'receipt' ? vReceipt() : v.type === 'friend' ? vFriend() : ''; }
   else html = ({home:vHome, scan:vScan, sog:vSog, saet:vSaet, stat:vStat, venner:vVenner, kvit:vKvit, profil:vProfil, noter:vNoter})[S.tab]?.() ?? vSamling();
+  // kameraet må ikke tegnes om (det blinker og mister billedet), så vi flytter det levende video-element over i den nye side
+  const oldVid = $('#vid');
   app.innerHTML = html + filterSheet();
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-current', !v && b.dataset.v === S.tab ? 'page' : 'false'));
-  const vid = $('#vid'); if (vid && stream){ vid.srcObject = stream; vid.play().catch(() => {}); }
+  const vid = $('#vid');
+  if (vid && stream){
+    if (oldVid && oldVid !== vid && oldVid.srcObject === stream){ vid.replaceWith(oldVid); oldVid.play().catch(() => {}); }
+    else { vid.srcObject = stream; vid.play().catch(() => {}); }
+  }
   updateBadges();
 }
 function go(view){ S.view = view; S.delArm = false; render(); window.scrollTo(0, 0); }
@@ -849,8 +857,17 @@ async function startCam(){
   }
 }
 function stopCam(){ if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } }
-function snap(){
-  const vid = $('#vid'); if (!vid || !vid.videoWidth) return;
+let snapping = false;
+async function snap(){
+  if (snapping) return;
+  let vid = $('#vid');
+  if (!vid || !stream){ toast('Kameraet er ikke startet. Tryk "Start kameraet" igen.'); S.scan = {phase:'idle'}; render(); return; }
+  snapping = true;
+  // vent op til 2 sek. på at kameraet leverer et billede
+  for (let i = 0; i < 20 && !(vid.videoWidth > 0 && vid.readyState >= 2); i++){ await new Promise(r => setTimeout(r, 100)); vid = $('#vid') || vid; }
+  snapping = false;
+  if (!vid.videoWidth){ toast('Kameraet er ikke klar endnu. Prøv igen om et øjeblik.'); return; }
+  const cam = vid.parentElement; cam.classList.add('flash'); setTimeout(() => cam.classList.remove('flash'), 250);
   const box = vid.parentElement.getBoundingClientRect(), W = box.width, H = box.height, vw = vid.videoWidth, vh = vid.videoHeight;
   const sc = Math.max(W / vw, H / vh), ox = (W - vw * sc) / 2, oy = (H - vh * sc) / 2;
   const fh = H * 0.84, fw = fh * 63 / 88, fx = (W - fw) / 2, fy = (H - fh) / 2;
@@ -904,6 +921,18 @@ function nameScore(a, b){
   let p = 0; while (p < a.length && p < b.length && a[p] === b[p]) p++;
   return p * 10;
 }
+// enkel kvalitetskontrol af billedet: lysstyrke og skarphed i bunden, hvor nummeret står
+function quality(canvas){
+  try {
+    const w = 240, h = Math.round(w * canvas.height / canvas.width), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(canvas, 0, 0, w, h);
+    const y0 = Math.floor(h * 0.8), d = g.getImageData(0, y0, w, h - y0).data, n = d.length / 4, L = new Float32Array(n);
+    let sum = 0; for (let i = 0; i < n; i++){ L[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2]; sum += L[i]; }
+    const mean = sum / n, W = w, H = h - y0; let lap = 0, m = 0;
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++){ const i = y * W + x; const v = 4 * L[i] - L[i-1] - L[i+1] - L[i-W] - L[i+W]; lap += v * v; m++; }
+    return {bright:mean, sharp: m ? lap / m : 0};
+  } catch(e){ return null; }
+}
 async function identify(canvas){
   const lang = S.lang;
   S.scan = {phase:'busy', img:canvas.toDataURL('image/jpeg', 0.8), msg:'Gør kortlæseren klar …', lang}; render();
@@ -933,10 +962,14 @@ async function identify(canvas){
       const r = await api('/cards?name=' + encodeURIComponent(name), lang);
       cands = (r || []).filter(c => !isPocket(c.id)).slice(0, 24).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId}));
     }
-    S.scan = {phase:'result', lang, cands, guess:{name, num: num && num.text}, msg: num || name ? 'Der var ingen kort, der passede til det, appen læste.' : 'Appen kunne ikke læse nummeret på billedet.'};
+    const q = quality(canvas);
+    const why = !q ? '' : q.bright < 55 ? ' Billedet er for mørkt – find mere lys.' : q.bright > 235 ? ' Billedet er overbelyst – undgå genskin fra lampen.' : q.sharp < 40 ? ' Billedet er uskarpt – hold telefonen stille og lidt længere væk, så den kan fokusere.' : '';
+    S.scan = {phase:'result', lang, cands, img:S.scan.img, guess:{name, num: num && num.text},
+      msg: (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
     if (cands.length === 1){ go({type:'card', id:cands[0].id, lang}); return; }
   } catch(e){
-    S.scan = {phase:'result', lang, cands:[], msg: e && e.message === 'ocr-missing' ? 'Kortlæseren kunne ikke hentes. Tjek din internetforbindelse.' : 'Der skete en fejl. Tjek din internetforbindelse og prøv igen.'};
+    console.error('scan', e);
+    S.scan = {phase:'result', lang, cands:[], img:S.scan && S.scan.img, msg: e && e.message === 'ocr-missing' ? 'Kortlæseren kunne ikke hentes. Tjek din internetforbindelse og genindlæs appen.' : 'Der skete en fejl under læsningen (' + String(e && (e.message || e)).slice(0, 80) + '). Tjek din internetforbindelse og prøv igen.'};
   }
   render();
 }

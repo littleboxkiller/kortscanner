@@ -1,6 +1,6 @@
 // Gemmer selve appen, så den åbner hurtigt og virker uden net (kortopslag kræver net).
-const CACHE = 'kortscanner-v23';
-const SHELL = ['./', 'index.html', 'style.css?v=23', 'app.js?v=23', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'kortscanner-v24';
+const SHELL = ['./', 'index.html', 'style.css?v=24', 'app.js?v=24', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

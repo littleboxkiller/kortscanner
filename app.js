@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '23';
+const APP_VERSION = '24';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -1246,7 +1246,9 @@ function smartSearch(idx, q){
   }
   const perfect = out.filter(x => x[1] === 0);
   const pool = perfect.length ? perfect : out.filter(x => x[1] <= 1);
-  return pool.sort((a, b) => b[0] - a[0]).slice(0, 200).map(x => x[2]);
+  const res = pool.sort((a, b) => b[0] - a[0]).slice(0, 200).map(x => x[2]);
+  res.perfect = perfect.length > 0;
+  return res;
 }
 // søg i angreb, evner og kunstner (bruges når navnet ikke giver noget)
 async function textSearch(q, idx){
@@ -1273,7 +1275,7 @@ function doSearch(q){
         const idx = await loadIndex(); if (n !== searchN) return;
         let list = smartSearch(idx, q);
         s.textHits = false;
-        if (list.length < 3){ const extra = await textSearch(q, idx); if (n !== searchN) return; if (extra.length){ list = list.concat(extra.filter(c => !list.includes(c))); s.textHits = true; } }
+        if (list.length < 3 || !list.perfect){ const extra = await textSearch(q, idx); if (n !== searchN) return; if (extra.length){ list = list.perfect ? list.concat(extra.filter(c => !list.includes(c))) : extra.concat(list.filter(c => !extra.includes(c))); s.textHits = true; } }
         s.results = list.map(c => ({id:c.id, localId:c.localId, name:c.name, image:c.image, setName:c.setName})); s.lang = lang;
         s.busy = false; const rr = $('#results'); if (rr) rr.innerHTML = resultsHtml();
         enrichSearch(); return;

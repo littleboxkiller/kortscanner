@@ -4,6 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
+const APP_VERSION = '12';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -398,7 +399,7 @@ function vScan(){
   if (sc.phase === 'live' || sc.phase === 'starting'){
     body = `<div class="cam"><video id="vid" playsinline muted autoplay></video><div class="frame"></div><div class="msg">${sc.phase === 'starting' ? 'Starter kameraet …' : 'Læg kortet inden for rammen, så nummeret i bunden er skarpt'}</div></div>
     <button class="shutter" data-act="snap" aria-label="Tag billede og find kortet"></button>
-    <label class="btn ghost full" for="fileIn">Vælg et billede i stedet</label>`;
+    <label class="btn ghost full" for="camIn">Brug telefonens kamera i stedet</label>`;
   } else if (sc.phase === 'busy'){
     body = `<div class="cam">${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede af kortet" style="object-fit:contain">` : ''}</div>${spinner(sc.msg || 'Læser kortet …')}`;
   } else if (sc.phase === 'result'){
@@ -411,12 +412,15 @@ function vScan(){
     <div class="row wrapr"><button class="btn" data-act="rescan">Scan igen</button><button class="btn ghost" data-act="toSearch">Søg i stedet</button></div>`;
   } else if (sc.phase === 'nocam'){
     body = `<div class="box col"><h2>Kameraet kunne ikke startes</h2><p class="small mut" style="margin:0">${esc(sc.msg)}</p></div>
-    <label class="btn full" for="fileIn">Tag eller vælg et billede</label><button class="btn ghost full" data-act="startCam">Prøv kameraet igen</button>`;
+    <label class="btn full" for="camIn">Tag billede af kortet</label><label class="btn ghost full" for="fileIn">Vælg fra dine billeder</label><button class="btn ghost full" data-act="startCam">Prøv kameraet igen</button>`;
   } else {
-    body = `${langPills()}<div class="box col"><p style="margin:0">Appen læser kortets <b>nummer</b> (f.eks. 223/197) og finder det officielle billede og prisen.${S.lang === 'ja' ? ' Japanske kort findes via nummeret – navnet kan ikke læses.' : ''}</p></div>
-    <button class="btn full" data-act="startCam">Start kameraet</button><label class="btn ghost full" for="fileIn">Vælg et billede</label>`;
+    body = `${langPills()}<div class="box col"><p style="margin:0">Appen læser kortets <b>nummer</b> (f.eks. 223/197) og finder det officielle billede og prisen.${S.lang === 'ja' ? ' Japanske kort findes via nummeret – navnet kan ikke læses.' : ''}</p>
+    <p class="small mut" style="margin:0">Tag billedet tæt på, så kortet fylder det meste af billedet, og nummeret nederst er skarpt.</p></div>
+    <label class="btn full" for="camIn">Tag billede af kortet</label>
+    <label class="btn ghost full" for="fileIn">Vælg fra dine billeder</label>
+    <button class="btn text" data-act="startCam">Brug live-kamera i stedet</button>`;
   }
-  return `<div class="col"><h1>Scan kort</h1>${body}</div>`;
+  return `<div class="col"><h1>Scan kort</h1>${body}<span class="tiny mut" style="text-align:center">Version ${APP_VERSION}</span></div>`;
 }
 
 function vSog(){
@@ -828,6 +832,9 @@ function vHome(){
 function render(){
   if (!user) return;
   const app = $('#app'); const v = S.view;
+  // mens live-kameraet kører, tegnes siden ikke om (ellers blinker det)
+  if (!v && !S.sheet && S.tab === 'scan' && S.scan.phase === 'live' && stream && $('#vid') && app.dataset.live === '1'){ updateBadges(); return; }
+  app.dataset.live = (!v && S.tab === 'scan' && S.scan.phase === 'live') ? '1' : '';
   let html;
   if (v){ html = v.type === 'card' ? vCard() : v.type === 'entry' ? vEntry() : v.type === 'set' ? vSet() : v.type === 'sell' ? vSell() : v.type === 'receipt' ? vReceipt() : v.type === 'friend' ? vFriend() : ''; }
   else html = ({home:vHome, scan:vScan, sog:vSog, saet:vSaet, stat:vStat, venner:vVenner, kvit:vKvit, profil:vProfil, noter:vNoter})[S.tab]?.() ?? vSamling();
@@ -879,8 +886,9 @@ async function snap(){
 async function fromFile(file){
   if (!file) return;
   const url = URL.createObjectURL(file); const im = new Image();
-  im.onload = () => { const k = Math.min(1, 1400 / Math.max(im.width, im.height)); const c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url); stopCam(); identify(c); };
-  im.onerror = () => toast('Kunne ikke læse billedet.');
+  S.scan = {phase:'busy', msg:'Indlæser billedet …'}; S.tab = 'scan'; S.view = null; render();
+  im.onload = () => { const k = Math.min(1, 2400 / Math.max(im.width, im.height)); const c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url); stopCam(); identify(c, true); };
+  im.onerror = () => { S.scan = {phase:'result', cands:[], msg:'Billedet kunne ikke åbnes. Prøv at tage det igen.'}; render(); };
   im.src = url;
 }
 
@@ -933,9 +941,9 @@ function quality(canvas){
     return {bright:mean, sharp: m ? lap / m : 0};
   } catch(e){ return null; }
 }
-async function identify(canvas){
+async function identify(canvas, photo){
   const lang = S.lang;
-  S.scan = {phase:'busy', img:canvas.toDataURL('image/jpeg', 0.8), msg:'Gør kortlæseren klar …', lang}; render();
+  S.scan = {phase:'busy', img:canvas.toDataURL('image/jpeg', 0.7), msg:'Gør kortlæseren klar (første gang tager det lidt tid) …', lang}; render();
   try {
     const w = await getWorker();
     S.scan.msg = 'Læser kortet …'; render();
@@ -944,6 +952,13 @@ async function identify(canvas){
     let num = guessNumber(bottom.data.text), name = guessName(top.data.text);
     if (!num){ const left = await w.recognize(region(canvas, 0.84, 1, 0, 0.55)); num = guessNumber(left.data.text); }
     if (!num){ const z = await w.recognize(region(canvas, 0.88, 0.99, 0, 0.45, 'grayscale(1) contrast(2.5) brightness(1.1)', 2200)); num = guessNumber(z.data.text); }
+    if (!num && photo){
+      // telefonens eget foto: kortet ligger et sted i billedet, så hele billedet læses
+      S.scan.msg = 'Læser hele billedet …'; render();
+      const all = await w.recognize(region(canvas, 0, 1, 0, 1, 'grayscale(1) contrast(1.8)', Math.min(2400, Math.max(1600, canvas.width))));
+      num = guessNumber(all.data.text);
+      if (!name) name = guessName(all.data.text);
+    }
     S.scan.msg = 'Finder kortet …'; render();
     let cands = [];
     if (num){
@@ -1194,7 +1209,7 @@ document.addEventListener('input', ev => {
 });
 document.addEventListener('change', ev => {
   const t = ev.target;
-  if (t.id === 'fileIn'){ fromFile(t.files[0]); t.value = ''; return; }
+  if (t.id === 'fileIn' || t.id === 'camIn'){ fromFile(t.files[0]); t.value = ''; return; }
   if (t.id === 'importIn'){ importData(t.files[0]); t.value = ''; return; }
   if (!user) return;
   if (t.dataset.f === 'sort'){ S.sort = t.value; render(); }

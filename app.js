@@ -120,13 +120,14 @@ function marketLinks(name, number){
   const q = encodeURIComponent([name, number].filter(Boolean).join(' '));
   return `<div class="row wrapr"><a class="btn ghost" href="https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${q}" target="_blank" rel="noopener">Cardmarket</a><a class="btn ghost" href="https://www.tcgplayer.com/search/pokemon/product?q=${q}" target="_blank" rel="noopener">TCGplayer</a><a class="btn ghost" href="https://www.ebay.com/sch/i.html?_nkw=${q}" target="_blank" rel="noopener">eBay</a></div>`;
 }
+function pUpd(card){ const p = card.pricing || {}; const u = (p.cardmarket && p.cardmarket.updated) || (p.tcgplayer && p.tcgplayer.updated); try { return u ? new Date(u).toLocaleDateString('da-DK') : ''; } catch(e){ return ''; } }
 function priceBox(card){
   const p = prices(card);
   if (!p.rows.length) return `<div class="box col"><h3>Markedspris</h3><p class="small mut" style="margin:0">Ingen prisdata for dette kort endnu.</p>${marketLinks(card.name, card.localId)}</div>`;
   return `<div class="box col" style="gap:6px"><h3>Markedspris</h3>
   ${p.cm != null ? `<div class="row between"><span class="mut small">Cardmarket trend</span><span class="big" style="font-size:28px">${kr(p.cm * EUR_DKK)}</span></div>` : ''}
   <div>${p.rows.map(r => `<div class="price"><span>${esc(r.src)} · ${esc(r.l)}</span><span class="nw b">${esc(r.v)}${r.dkk ? ` <span class="mut">(${kr(r.dkk)})</span>` : ''}</span></div>`).join('')}</div>
-  <span class="tiny mut">Priser fra TCGdex${card.updated ? ', opdateret ' + esc(new Date(card.updated).toLocaleDateString('da-DK')) : ''}. Euro omregnet med 7,46.</span>
+  <span class="tiny mut">Priser fra TCGdex${pUpd(card) ? ', opdateret ' + esc(pUpd(card)) : ''}. Euro omregnet med 7,46.</span>
   ${marketLinks(card.name, card.localId)}</div>`;
 }
 
@@ -187,7 +188,7 @@ function resultsHtml(){
   if (s.err) return `<div class="note">${esc(s.err)}</div>`;
   if (!s.results) return `<p class="small mut">Skriv mindst 3 bogstaver. Kortdata og billeder kommer fra TCGdex.</p>`;
   if (!s.results.length) return `<p class="small mut">Ingen kort fundet. Tjek stavningen – navne er på engelsk.</p>`;
-  return `<p class="small mut">${s.results.length}${s.results.length >= 120 ? '+' : ''} kort</p><div class="cards">${s.results.slice(0, 120).map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.id)}</span></button>`).join('')}</div>`;
+  return `<p class="small mut">${s.results.length}${s.results.length >= 120 ? '+' : ''} kort</p><div class="cards">${s.results.slice(0, 120).map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span></button>`).join('')}</div>`;
 }
 
 function vCard(){
@@ -380,7 +381,7 @@ function guessName(text){
 }
 function guessNumber(text){
   const t = text.replace(/[Oo](?=\d)|(?<=\d)[Oo]/g, '0').replace(/[|\\]/g, '/');
-  const m = t.match(/\b([A-Z]{0,3})\s?(\d{1,3})\s?\/\s?([A-Z]{0,3})\s?(\d{2,3})\b/i);
+  const m = t.match(/(?:^|[^A-Za-z0-9])([A-Z]{0,3})(\d{1,3})\s?\/\s?([A-Z]{0,3})(\d{2,3})(?![0-9])/);
   if (!m) return null;
   return {pre:(m[1] || '').toUpperCase(), local:m[2], total:+m[4], text:(m[1] || '') + m[2] + '/' + (m[3] || '') + m[4]};
 }
@@ -405,7 +406,7 @@ async function identify(canvas){
     if (num){
       const sets = await getSets();
       const hits = sets.filter(s => s.official === num.total || (num.pre && s.total === num.total));
-      const locals = [...new Set([num.pre + num.local, num.pre + String(+num.local), num.pre + num.local.padStart(3, '0')])];
+      const locals = [...new Set([num.pre + num.local, num.pre + String(+num.local), num.pre + num.local.padStart(3, '0'), num.local])];
       const tries = []; hits.slice(0, 30).forEach(s => locals.forEach(l => tries.push({s, l})));
       const found = await Promise.all(tries.map(t => api('/sets/' + encodeURIComponent(t.s.id) + '/' + encodeURIComponent(t.l)).catch(() => null)));
       const seen = new Set();
@@ -415,7 +416,7 @@ async function identify(canvas){
     }
     if (!cands.length && name){
       const r = await api('/cards?name=' + encodeURIComponent(name));
-      cands = (r || []).slice(0, 24).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId}));
+      cands = (r || []).filter(c => !isPocket(c.id)).slice(0, 24).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId}));
     }
     S.scan = {phase:'result', cands, guess:{name, num: num && num.text}, msg: num || name ? 'Der var ingen kort, der passede til det, appen læste.' : 'Appen kunne ikke læse navn eller nummer på billedet.'};
     if (cands.length === 1){ go({type:'card', id:cands[0].id}); return; }
@@ -426,6 +427,8 @@ async function identify(canvas){
 }
 
 /* ---------- search ---------- */
+const setOf = id => String(id).slice(0, String(id).lastIndexOf('-'));
+const isPocket = id => /^(A\d+[a-z]?|B\d+[a-z]?|P-[AB])-/i.test(String(id));
 let searchT, searchN = 0;
 function doSearch(q){
   clearTimeout(searchT);
@@ -433,7 +436,7 @@ function doSearch(q){
   if (q.trim().length < 3){ s.results = null; s.err = ''; s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
   searchT = setTimeout(async () => {
     const n = ++searchN; s.busy = true; s.err = ''; const r0 = $('#results'); if (r0) r0.innerHTML = resultsHtml();
-    try { const res = await api('/cards?name=' + encodeURIComponent(q.trim())); if (n !== searchN) return; s.results = (res || []).filter(c => c.image).concat((res || []).filter(c => !c.image)); }
+    try { const [res, sets] = await Promise.all([api('/cards?name=' + encodeURIComponent(q.trim())), getSets().catch(() => [])]); if (n !== searchN) return; const names = {}; (sets || []).forEach(x => names[x.id] = x.name); const list = (res || []).filter(c => !isPocket(c.id)).map(c => ({...c, setName: names[setOf(c.id)] || ''})); s.results = list.filter(c => c.image).concat(list.filter(c => !c.image)); }
     catch(e){ if (n !== searchN) return; s.err = 'Kunne ikke søge lige nu. Tjek din internetforbindelse.'; s.results = null; }
     s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml();
   }, 400);

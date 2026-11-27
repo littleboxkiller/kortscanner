@@ -544,8 +544,34 @@ document.addEventListener('change', ev => {
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && stream){ stopCam(); if (S.scan.phase === 'live'){ S.scan = {phase:'idle'}; render(); } } });
 
-/* ---------- start ---------- */
-load(); render();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-setTimeout(() => { if (S.data.entries.length) refreshPrices(false); }, 1500);
+/* ---------- privat adgang (invitationskode fra QR-koden) ---------- */
+const INVITE_HASH = 'dba68eefcfdff056b437e06bf81a14923514a684f6f46e549cdc6df869bae200';
+const KEY_STORE = 'kortscanner.invite';
+const cleanCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function sha(t){ const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+async function validCode(c){ try { return !!c && (await sha(cleanCode(c))) === INVITE_HASH; } catch(e){ return false; } }
+function lockScreen(msg){
+  $('#tabs').hidden = true; document.querySelector('header.top .iconbtn').hidden = true;
+  $('#app').innerHTML = `<div class="col" style="padding-top:24px"><div class="logo" style="width:64px;height:64px;border-radius:18px" aria-hidden="true"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"/></svg></div>
+  <h1>Kortscanner er privat</h1><p class="mut" style="margin:0">Scan QR-koden, du har fået, med telefonens kamera. Eller skriv invitationskoden herunder.</p>
+  <label class="f">Invitationskode<input class="i" id="inviteIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX" style="text-transform:uppercase;letter-spacing:2px"></label>
+  ${msg ? `<p class="small down" style="margin:0">${esc(msg)}</p>` : ''}<button class="btn full" id="inviteBtn">Lås op</button></div>`;
+  const go2 = async () => { const v = $('#inviteIn').value; if (await validCode(v)){ try { localStorage.setItem(KEY_STORE, cleanCode(v)); } catch(e){} start(); } else lockScreen('Koden passer ikke. Tjek at du har skrevet den rigtigt.'); };
+  $('#inviteBtn').onclick = go2; $('#inviteIn').onkeydown = e => { if (e.key === 'Enter') go2(); };
+}
+let started = false;
+function start(){
+  if (started) return; started = true;
+  $('#tabs').hidden = false; document.querySelector('header.top .iconbtn').hidden = false;
+  load(); render();
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  setTimeout(() => { if (S.data.entries.length) refreshPrices(false); }, 1500);
+}
+(async () => {
+  const m = location.hash.match(/k=([A-Za-z0-9-]+)/);
+  let saved = ''; try { saved = localStorage.getItem(KEY_STORE) || ''; } catch(e){}
+  if (m && await validCode(m[1])){ try { localStorage.setItem(KEY_STORE, cleanCode(m[1])); } catch(e){} history.replaceState(null, '', location.pathname); start(); }
+  else if (await validCode(saved)) start();
+  else lockScreen(m ? 'Koden i linket passer ikke længere. Bed om en ny QR-kode.' : '');
+})();
 })();

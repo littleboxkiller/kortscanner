@@ -12,7 +12,7 @@ button{cursor:pointer}
 :focus-visible{outline:3px solid var(--acc);outline-offset:2px}
 .wrap{max-width:640px;margin:0 auto;padding:8px 16px calc(110px + env(safe-area-inset-bottom))}
 header.top{display:flex;align-items:center;gap:12px;padding:12px 16px;max-width:640px;margin:0 auto}
-.brand{flex:1;display:flex;align-items:center;gap:10px;font:700 20px 'Space Grotesk',sans-serif}
+.brand{flex:1;display:flex;align-items:center;gap:10px;font:700 20px 'Space Grotesk',sans-serif;background:none;border:0;color:var(--ink);padding:0;min-height:44px;cursor:pointer;justify-content:flex-start}
 .logo{width:34px;height:34px;border-radius:10px;background:var(--acc);color:var(--accInk);display:grid;place-items:center}
 .iconbtn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--card);display:grid;place-items:center}
 .col{display:flex;flex-direction:column;gap:14px}.row{display:flex;gap:10px;align-items:center}.wrapr{flex-wrap:wrap}.between{justify-content:space-between}
@@ -66,3 +66,10 @@ nav.tabs .scanbtn span{width:60px;height:60px;border-radius:50%;background:var(-
 .swatch{width:40px;height:40px;border-radius:50%;border:3px solid transparent}
 .swatch[aria-pressed=true]{border-color:var(--ink)}
 .topbtn[hidden]{display:none}
+.hscroll{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 8px;margin:0 -16px;padding-inline:16px;scrollbar-width:none}
+.hscroll::-webkit-scrollbar{display:none}
+.hcard{flex:0 0 140px;scroll-snap-align:start;background:var(--card);border:0;border-radius:16px;padding:8px;text-align:left;display:flex;flex-direction:column;gap:4px;color:var(--ink)}
+.hset{flex:0 0 170px;scroll-snap-align:start;background:var(--card);border:0;border-radius:16px;padding:12px;text-align:left;display:flex;flex-direction:column;gap:4px;color:var(--ink);min-height:110px}
+.hset-logo{display:flex;flex-direction:column;gap:6px;font:700 16px 'Space Grotesk',sans-serif}
+.hset-logo img{max-width:100%;height:44px;object-fit:contain;object-position:left}
+section h2{font-size:19px}

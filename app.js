@@ -14,7 +14,7 @@ const STORE_KEY = 'kortscanner.v1';
 
 /* ---------- state ---------- */
 const S = {
-  tab:'samling', view:null,
+  tab:'home', view:null, home:{loading:false, data:null, err:'', mode:'value'},
   data:{entries:[], sold:[]},
   coll:'all', sort:'value', filter:'', lang:'en',
   search:{q:'', results:null, busy:false, err:''},
@@ -578,13 +578,92 @@ function vNoter(){
   ${notes.length ? '<button class="btn text" data-act="clearNotes">Ryd prisbeskeder</button>' : ''}</div>`;
 }
 
+
+/* ---------- startside (highlights) ---------- */
+const POPULAR_CARDS = ['sv08.5-161','swsh7-215','swsh7-218','sv03.5-199','base1-4','swsh11-186','swsh8-271','sv04.5-234','sv08-238','sv02-203','sv03-223','sv03.5-205'];
+const POPULAR_SETS = ['sv08.5','sv03.5','swsh7','sv08','swsh12.5','base1'];
+const HOME_KEY = 'kortscanner.home.v1';
+const isMainSet = s => !isPocket(s.id + '-0') && !/promo/i.test(s.name) && !/-c$/.test(s.id);
+const cardBrief = c => { const cm = (c.pricing || {}).cardmarket || {}; return {id:c.id, name:c.name, set:c.set && c.set.name, setId:c.set && c.set.id, localId:c.localId, image:c.image || '', rarity:c.rarity || '', eur:+(cm.trend || cm.avg30 || cm.avg || 0), avg30:+(cm.avg30 || 0)}; };
+async function loadHome(force){
+  const H = S.home;
+  if (H.loading) return;
+  if (!force && !H.data){ try { const c = JSON.parse(localStorage.getItem(HOME_KEY) || 'null'); if (c && Date.now() - c.t < 6 * 36e5) H.data = c.data; } catch(e){} }
+  if (H.data && !force){ render(); return; }
+  H.loading = true; H.err = ''; render();
+  try {
+    const sets = await getSets('en');
+    const main = sets.filter(isMainSet);
+    const recent = await Promise.all(main.slice(-8).map(s => getSet(s.id, 'en').catch(() => null)));
+    const newest = recent.filter(Boolean).filter(s => s.releaseDate).sort((a, b) => String(b.releaseDate).localeCompare(String(a.releaseDate)));
+    const newSets = newest.slice(0, 6).map(s => ({id:s.id, name:s.name, date:s.releaseDate, official:s.cardCount && s.cardCount.official, total:s.cardCount && s.cardCount.total, logo:s.logo || '', serie:s.serie && s.serie.name}));
+    // nye jagtkort: de sidste kort i de to nyeste sæt er typisk de sjældne specialkort
+    const hotIds = []; newest.slice(0, 2).forEach(s => (s.cards || []).slice(-8).forEach(c => hotIds.push(c.id)));
+    const [hotCards, popCards] = await Promise.all([
+      Promise.all(hotIds.map(id => getCard(id, 'en').catch(() => null))),
+      Promise.all(POPULAR_CARDS.map(id => getCard(id, 'en').catch(() => null)))]);
+    const hot = hotCards.filter(Boolean).map(cardBrief).filter(c => c.eur > 0 && c.image).sort((a, b) => b.eur - a.eur).slice(0, 10);
+    const popular = popCards.filter(Boolean).map(cardBrief).filter(c => c.image);
+    const byId = {}; sets.forEach(s => byId[s.id] = s);
+    const popSets = POPULAR_SETS.map(id => byId[id]).filter(Boolean).map(s => ({id:s.id, name:s.name, official:s.official, total:s.total}));
+    H.data = {t:Date.now(), hot, popular, newSets, popSets};
+    try { localStorage.setItem(HOME_KEY, JSON.stringify({t:Date.now(), data:H.data})); } catch(e){}
+  } catch(e){ H.err = 'Kunne ikke hente nyheder lige nu. Tjek din internetforbindelse.'; }
+  H.loading = false; render();
+}
+const chg = c => c.avg30 > 0 && c.eur > 0 ? (c.eur - c.avg30) / c.avg30 * 100 : null;
+function miniCard(c){
+  const ch = chg(c);
+  return `<button class="hcard" data-act="openCard" data-v="${esc(c.id)}" data-l="en">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.set || '')}</span><span class="row between small"><b class="nw">${kr(c.eur * EUR_DKK)}</b>${ch != null ? `<span class="tiny b ${ch >= 0 ? 'up' : 'down'}">${pct(ch)}</span>` : ''}</span></button>`;
+}
+function vHome(){
+  const H = S.home, d = H.data, p = S.profile || {};
+  const held = S.data.entries.filter(e => e.coll !== 'wish');
+  const total = held.reduce((a, e) => a + value(e), 0), cnt = held.reduce((a, e) => a + (+e.qty || 1), 0);
+  const with30 = held.filter(e => e.avg30 && e.eur && !(+e.manual > 0));
+  const then = with30.reduce((a, e) => a + e.avg30 * EUR_DKK * (+e.qty || 1), 0), nowV = with30.reduce((a, e) => a + e.eur * EUR_DKK * (+e.qty || 1), 0);
+  const ch30 = then > 0 ? (nowV - then) / then * 100 : null;
+  const pend = toConfirm().length, req = incomingReq().length, alerts = S.notes.filter(n => !n.read).length;
+  const movers = held.filter(e => e.avg30 && e.eur).map(e => ({e, ch:(e.eur - e.avg30) / e.avg30 * 100})).sort((a, b) => Math.abs(b.ch) - Math.abs(a.ch)).slice(0, 3);
+  let pop = d ? d.popular.slice() : [];
+  if (H.mode === 'up') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(b) - chg(a));
+  else if (H.mode === 'down') pop = pop.filter(c => chg(c) != null).sort((a, b) => chg(a) - chg(b));
+  else pop.sort((a, b) => b.eur - a.eur);
+  const fmtDate = s => { try { return new Date(s).toLocaleDateString('da-DK', {day:'numeric', month:'short', year:'numeric'}); } catch(e){ return s; } };
+  return `<div class="col">
+  <h1 style="font-size:24px">Hej${p.display_name || p.username ? ' ' + esc(p.display_name || p.username) : ''}</h1>
+  <button class="box col" data-act="tab" data-v="samling" style="gap:4px;border:0;text-align:left;color:var(--ink);width:100%">
+    <div class="row between"><span class="small mut">Din samling</span><span class="small b" style="color:var(--link)">Se samling ›</span></div>
+    <span class="big">${kr(total)}</span>
+    <span class="small mut">${cnt} kort${ch30 != null ? ` · 30 dage: <b class="${ch30 >= 0 ? 'up' : 'down'}">${pct(ch30)}</b>` : ''}</span>
+  </button>
+  ${pend || req || alerts ? `<button class="li" data-act="tab" data-v="noter" style="border:2px solid var(--acc)"><div class="grow"><div class="b">Du har ${[pend ? pend + ' køb at bekræfte' : '', req ? req + ' venneanmodning' + (req > 1 ? 'er' : '') : '', alerts ? alerts + ' prisalarm' + (alerts > 1 ? 'er' : '') : ''].filter(Boolean).join(', ')}</div><div class="tiny mut">Tryk for at se beskeder</div></div><span class="mut">›</span></button>` : ''}
+  ${!cnt ? `<div class="row wrapr"><button class="btn" data-act="tab" data-v="scan">Scan dit første kort</button><button class="btn ghost" data-act="tab" data-v="sog">Søg kort</button></div>` : ''}
+  ${H.err ? `<div class="note">${esc(H.err)} <button class="btn text" data-act="homeReload">Prøv igen</button></div>` : ''}
+  ${!d && H.loading ? spinner('Henter nyheder …') : ''}
+  ${d ? `
+  <section class="col" style="gap:8px"><div class="row between"><h2>Nye jagtkort</h2><span class="tiny mut">Fra de nyeste sæt</span></div>
+    <div class="hscroll" role="list">${d.hot.length ? d.hot.map(miniCard).join('') : '<span class="small mut">Ingen prisdata endnu for de nyeste sæt.</span>'}</div></section>
+  <section class="col" style="gap:8px"><h2>Populære kort</h2>
+    <div class="pills" role="group" aria-label="Sortér populære kort"><button class="pill" data-act="homeMode" data-v="value" aria-pressed="${H.mode === 'value'}">Mest værdifulde</button><button class="pill" data-act="homeMode" data-v="up" aria-pressed="${H.mode === 'up'}">Stiger mest</button><button class="pill" data-act="homeMode" data-v="down" aria-pressed="${H.mode === 'down'}">Falder mest</button></div>
+    <div class="hscroll" role="list">${pop.map(miniCard).join('')}</div>
+    <span class="tiny mut">Priser er Cardmarket trend omregnet til kroner. Ændringen er i forhold til 30-dages gennemsnittet.</span></section>
+  <section class="col" style="gap:8px"><h2>Nyeste sæt</h2>
+    <div class="hscroll" role="list">${d.newSets.map(s => `<button class="hset" data-act="openSet" data-v="${esc(s.id)}" data-l="en"><span class="hset-logo">${s.logo ? `<img src="${esc(s.logo)}.png" alt="" loading="lazy" onerror="this.remove()">` : ''}<span>${esc(s.name)}</span></span><span class="tiny mut">${esc(s.serie || '')}</span><span class="tiny">${esc(fmtDate(s.date))} · ${esc(s.official || '?')} kort</span></button>`).join('')}</div></section>
+  ${movers.length ? `<section class="col" style="gap:8px"><h2>Dine kort, der bevæger sig</h2>${movers.map(m => `<button class="li" data-act="openEntry" data-v="${esc(m.e.id)}">${artEl(m.e.image, m.e.name)}<div class="grow"><div class="b">${esc(m.e.name)}</div><div class="tiny mut">${esc(m.e.setName)} · ${kr(unitValue(m.e))}</div></div><b class="nw ${m.ch >= 0 ? 'up' : 'down'}">${pct(m.ch)}</b></button>`).join('')}</section>` : ''}
+  <section class="col" style="gap:8px"><h2>Populære sæt</h2>
+    <div class="grid2">${d.popSets.map(s => `<button class="li" data-act="openSet" data-v="${esc(s.id)}" data-l="en" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${esc(s.name)}</b><span class="tiny mut">${esc(s.official || '?')} kort${s.total > s.official ? ' + ' + (s.total - s.official) + ' ekstra' : ''}</span></button>`).join('')}</div></section>
+  <p class="tiny mut" style="margin:0">Opdateret ${esc(new Date(d.t).toLocaleString('da-DK', {hour:'2-digit', minute:'2-digit', day:'numeric', month:'short'}))} · <button class="btn text tiny" data-act="homeReload" style="min-height:32px;padding:0">Opdater nu</button></p>` : ''}
+  </div>`;
+}
+
 /* ---------- render ---------- */
 function render(){
   if (!user) return;
   const app = $('#app'); const v = S.view;
   let html;
   if (v){ html = v.type === 'card' ? vCard() : v.type === 'entry' ? vEntry() : v.type === 'set' ? vSet() : v.type === 'sell' ? vSell() : v.type === 'receipt' ? vReceipt() : v.type === 'friend' ? vFriend() : ''; }
-  else html = ({scan:vScan, sog:vSog, saet:vSaet, stat:vStat, venner:vVenner, kvit:vKvit, profil:vProfil, noter:vNoter})[S.tab]?.() ?? vSamling();
+  else html = ({home:vHome, scan:vScan, sog:vSog, saet:vSaet, stat:vStat, venner:vVenner, kvit:vKvit, profil:vProfil, noter:vNoter})[S.tab]?.() ?? vSamling();
   app.innerHTML = html;
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-current', !v && b.dataset.v === S.tab ? 'page' : 'false'));
   const vid = $('#vid'); if (vid && stream){ vid.srcObject = stream; vid.play().catch(() => {}); }
@@ -826,8 +905,8 @@ document.addEventListener('click', async ev => {
   const a = b.dataset.act, v = b.dataset.v;
   if (a !== 'del' && a !== 'unfriend') S.delArm = false;
   switch (a){
-    case 'tab': if (v !== 'scan') stopCam(); S.tab = v; S.view = null; if (v === 'scan' && S.scan.phase !== 'result') S.scan = {phase:'idle'}; if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); if (v === 'scan' && S.scan.phase === 'idle' && localStorage.getItem('kortscanner.camok')) startCam(); return;
-    case 'back': if (S.view && S.view.type === 'sell'){ const id = S.sell.id; S.sell = null; go({type:'entry', id}); } else if (S.view) go(null); else { S.tab = 'samling'; render(); window.scrollTo(0, 0); } return;
+    case 'tab': if (v !== 'scan') stopCam(); S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'scan' && S.scan.phase !== 'result') S.scan = {phase:'idle'}; if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); if (v === 'scan' && S.scan.phase === 'idle' && localStorage.getItem('kortscanner.camok')) startCam(); return;
+    case 'back': if (S.view && S.view.type === 'sell'){ const id = S.sell.id; S.sell = null; go({type:'entry', id}); } else if (S.view) go(null); else { S.tab = 'home'; render(); window.scrollTo(0, 0); } return;
     case 'coll': S.coll = v; break;
     case 'lang': S.lang = v; S.search = {q:'', results:null, busy:false, err:''}; break;
     case 'refresh': refreshPrices(true); return;
@@ -881,6 +960,8 @@ document.addEventListener('click', async ev => {
     case 'export': exportData(); return;
     case 'logout': stopCam(); user = null; S.data = {entries:[], sold:[]}; S.profile = null; await sb.auth.signOut(); return;
     case 'noop': return;
+    case 'homeReload': loadHome(true); return;
+    case 'homeMode': S.home.mode = v; break;
     default: return;
   }
   render();
@@ -955,7 +1036,7 @@ async function enterApp(u){
   if (!perr && !prof){ profileSetup(); return; }
   S.profile = prof || {id:u.id, username:'', share_collection:true}; S.profiles[u.id] = S.profile;
   chrome(true);
-  S.view = null; S.tab = 'samling'; render();
+  S.view = null; S.tab = 'home'; render(); loadHome();
   if (!entered){
     entered = true;
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

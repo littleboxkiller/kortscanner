@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '22';
+const APP_VERSION = '23';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -512,11 +512,11 @@ function resultsHtml(){
   const s = S.search;
   if (s.busy) return spinner('Søger …');
   if (s.err) return `<div class="note">${esc(s.err)}</div>`;
-  if (!s.results) return `<p class="small mut">${S.lang === 'ja' ? 'Skriv mindst 2 tegn. Japanske kort søges med japanske navne.' : 'Skriv mindst 3 bogstaver – eller vælg en sjældenhed under Filter.'}</p>`;
+  if (!s.results) return `<p class="small mut">${S.lang === 'ja' ? 'Skriv mindst 2 tegn. Japanske kort søges med japanske navne.' : 'Søg på navn, sæt, nummer, angreb eller kunstner – f.eks. "charizard promo", "blastoise ex mega", "umbreon evolving skies", "215/203" eller "dp45". Stavefejl er ok.'}</p>`;
   const list = searchView();
   if (gradedOn(S.sf) && s.lang === 'ja') return '<p class="small mut">Gradede priser findes kun for engelske kort.</p>';
   if (!list.length) return `${s.enriching ? spinner('Henter priser …') : ''}<p class="small mut">Ingen kort matcher.${filterCount(S.sf) ? ' Prøv at ændre filteret.' : S.lang === 'en' ? ' Tjek stavningen – navne er på engelsk.' : ''}</p>`;
-  return `<p class="small mut">${list.length}${s.results.length >= 120 && !filterCount(S.sf) ? '+' : ''} kort${s.enriching ? ' · henter priser …' : ''}</p><div class="cards">${list.slice(0, 120).map(c => { const p = sPrice(c.id, s.lang), g = gradedOn(S.sf); return `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span>${p > 0 ? `<span class="row between small"><b>${kr(p)}</b>${g ? `<span class="gbadge" style="position:static">${esc(gradeLabel(S.sf.grade))}</span>` : ''}</span>` : g && p === 0 ? '<span class="tiny mut">Ingen gradet pris</span>' : ''}</button>`; }).join('')}</div>`;
+  return `<p class="small mut">${list.length}${s.results.length >= 120 && !filterCount(S.sf) ? '+' : ''} kort${s.textHits ? ' · også fundet via angreb, evner eller kunstner' : ''}${s.enriching ? ' · henter priser …' : ''}</p><div class="cards">${list.slice(0, 120).map(c => { const p = sPrice(c.id, s.lang), g = gradedOn(S.sf); return `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(s.lang)}">${artEl(c.image, c.name)}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || c.id)} · ${esc(c.localId)}</span>${p > 0 ? `<span class="row between small"><b>${kr(p)}</b>${g ? `<span class="gbadge" style="position:static">${esc(gradeLabel(S.sf.grade))}</span>` : ''}</span>` : g && p === 0 ? '<span class="tiny mut">Ingen gradet pris</span>' : ''}</button>`; }).join('')}</div>`;
 }
 function vCard(){
   const {id, lang} = S.view, c = cached(id, lang);
@@ -1176,15 +1176,108 @@ async function identify(canvas, photo){
 }
 
 /* ---------- søgning ---------- */
+// Smart søgning: hele kortlisten (ca. 24.000 engelske kort) hentes én gang og gemmes,
+// så appen selv kan søge med stavefejl ("chariard"), nøgleord ("promo", "mega", "ex") , sæt-navne og numre.
+const IDX_CACHE = 'kortscanner-index-v1', IDX_URL = 'https://api.tcgdex.net/v2/en/cards';
+let IDX = null, IDXP = null;
+async function loadIndex(){
+  if (IDX) return IDX; if (IDXP) return IDXP;
+  IDXP = (async () => {
+    let list = null;
+    try {
+      const c = await caches.open(IDX_CACHE); const hit = await c.match(IDX_URL);
+      if (hit && Date.now() - (+hit.headers.get('x-t') || 0) < 3 * 864e5) list = await hit.json();
+      if (!list){ const r = await fetch(IDX_URL); const t = await r.text(); list = JSON.parse(t); c.put(IDX_URL, new Response(t, {headers:{'content-type':'application/json', 'x-t':String(Date.now())}})).catch(() => {}); }
+    } catch(e){ if (!list){ const r = await fetch(IDX_URL); list = await r.json(); } }
+    const sets = await getSets('en').catch(() => []); const sn = {}, order = {}, off = {}; sets.forEach((x, i) => { sn[x.id] = x.name; order[x.id] = i; off[x.id] = x.official || 0; });
+    const words = s => String(s || '').toLowerCase().replace(/[δ]/g, ' delta ').replace(/[☆★]/g, ' star ').replace(/[^a-z0-9/]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+    IDX = list.filter(c => !isPocket(c.id)).map(c => { const sid = setOf(c.id), setName = sn[sid] || ''; return {id:c.id, localId:c.localId, name:c.name, image:c.image, setName, nw:words(c.name), sw:words(setName), promo:/promo/i.test(setName), ord:order[sid] ?? -1, off:off[sid] || 0, loc:String(c.localId || '').toLowerCase().replace(/^0+(?=\d)/, '')}; });
+    return IDX;
+  })();
+  try { return await IDXP; } finally { IDXP = null; }
+}
+function lev(a, b, max){
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({length:b.length + 1}, (_, i) => i);
+  for (let i = 1; i <= a.length; i++){ const cur = [i]; let best = i; for (let j = 1; j <= b.length; j++){ cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1)); best = Math.min(best, cur[j]); } if (best > max) return max + 1; prev = cur; }
+  return prev[b.length];
+}
+// hvor godt et søgeord passer til et ord på kortet (0 = slet ikke)
+function wordScore(t, w){
+  if (t === w) return 10;
+  if (t.length >= 2 && w.startsWith(t)) return t.length >= 3 ? 8 : 5;
+  if (t.length >= 4){ const m = t.length >= 7 ? 2 : 1; if (lev(t, w, m) <= m) return 6; if (w.length > t.length && lev(t, w.slice(0, t.length), 1) <= 1) return 5; }
+  return 0;
+}
+const KEY_ALIAS = {lvx:['lv','x'], 'lv.x':['lv','x'], vmax:['vmax'], vstar:['vstar'], fullart:[], shiny:['shiny'], delta:['delta']};
+function smartSearch(idx, q){
+  let toks = q.toLowerCase().replace(/[δ]/g, ' delta ').replace(/[☆★]/g, ' star ').replace(/[^a-z0-9/.\s-]+/g, ' ').replace(/[-.](?![a-z0-9])/g, ' ').trim().split(/\s+/).filter(Boolean);
+  let wantPromo = false, wantMega = false; const nums = [], terms = []; let total = 0;
+  toks.forEach(t => {
+    t = t.replace(/\.$/, '');
+    if (/^promo(s)?$/.test(t)) wantPromo = true;
+    else if (t === 'mega') wantMega = true;
+    else if (/^\d{1,3}\/\d{1,3}$/.test(t)){ nums.push(t.split('/')[0].replace(/^0+(?=\d)/, '')); total = +t.split('/')[1]; }
+    else if (/^\d{1,3}$/.test(t)) nums.push(t.replace(/^0+(?=\d)/, ''));
+    else if (/^[a-z]{1,5}\d{1,3}[a-z]?$/.test(t) && !/^(v|gx|ex)$/.test(t)) nums.push(t.replace(/^([a-z]+)0+(?=\d)/, '$1'));
+    else if (KEY_ALIAS[t.replace('.', '')]) terms.push(...KEY_ALIAS[t.replace('.', '')]);
+    else terms.push(t);
+  });
+  if (!terms.length && !nums.length && !wantPromo && !wantMega) return [];
+  // ordforråd: beregn hver ords match én gang
+  const cacheN = {}, ws = (t, w) => { const k = t + '|' + w; return k in cacheN ? cacheN[k] : (cacheN[k] = wordScore(t, w)); };
+  const out = [];
+  for (const c of idx){
+    let sc = 0, miss = 0;
+    for (const t of terms){
+      let best = 0; for (const w of c.nw){ const v = ws(t, w); if (v > best) best = v; if (best === 10) break; }
+      if (best < 5){ let sb2 = 0; for (const w of c.sw){ const v = ws(t, w); if (v > sb2) sb2 = v; } if (sb2 >= 5) best = Math.max(best, sb2 * 0.5); }
+      if (best >= 2.5) sc += best; else miss++;
+    }
+    if (nums.length){ const hit = nums.some(n => c.loc === n || c.loc === n.replace(/^([a-z]+)/, '$1')); if (hit){ sc += 12; if (total && c.off === total) sc += 10; } else if (!terms.length) continue; else miss += 0.5; }
+    if (wantPromo){ if (c.promo) sc += 6; else miss += 0.7; }
+    if (wantMega){ if (c.nw[0] === 'mega' || c.nw[0] === 'm') sc += 8; else miss += 1; }
+    if (sc <= 0) continue;
+    sc -= miss * 9;
+    sc -= Math.max(0, c.nw.length - terms.length) * 0.6; // kortere navne først ("Blastoise ex" før "Blastoise & Piplup GX")
+    sc += (c.ord >= 0 ? c.ord : 0) * 0.002; // nyere sæt lidt højere ved lige stilling
+    if (c.image) sc += 0.5;
+    out.push([sc, miss, c]);
+  }
+  const perfect = out.filter(x => x[1] === 0);
+  const pool = perfect.length ? perfect : out.filter(x => x[1] <= 1);
+  return pool.sort((a, b) => b[0] - a[0]).slice(0, 200).map(x => x[2]);
+}
+// søg i angreb, evner og kunstner (bruges når navnet ikke giver noget)
+async function textSearch(q, idx){
+  const phrase = q.trim().replace(/["\\*]/g, '');
+  if (phrase.length < 4) return [];
+  const out = [], seen = new Set(), byId = {}; idx.forEach(c => byId[c.id] = c);
+  const add = c => { if (c && !seen.has(c.id)){ seen.add(c.id); out.push(c); } };
+  try { const ill = await api('/cards?illustrator=like:' + encodeURIComponent(phrase) + '&pagination:itemsPerPage=60', 'en'); (ill || []).forEach(x => add(byId[x.id])); } catch(e){}
+  const r = await ptGet('https://api.pokemontcg.io/v2/cards?pageSize=60&q=' + encodeURIComponent(`attacks.name:"${phrase}*" OR abilities.name:"${phrase}*"`));
+  ((r && r.data) || []).forEach(x => { add(byId[x.id] || idx.find(c => c.loc === String(x.number || '').toLowerCase() && c.nw.join(' ') === String(x.name || '').toLowerCase().replace(/-/g, ' ').replace(/[^a-z0-9 ]/g, '').trim())); });
+  return out;
+}
 let searchT, searchN = 0;
 function doSearch(q){
   clearTimeout(searchT);
   const s = S.search; s.q = q; s.lang = S.lang;
-  const min = S.lang === 'ja' ? 2 : 3;
+  const min = 2;
   if (q.trim().length < min && !S.sf.rarity){ s.results = null; s.err = ''; s.busy = false; const r = $('#results'); if (r) r.innerHTML = resultsHtml(); return; }
   searchT = setTimeout(async () => {
     const n = ++searchN, lang = S.lang; s.busy = true; s.err = ''; const r0 = $('#results'); if (r0) r0.innerHTML = resultsHtml();
     try {
+      if (lang === 'en' && !S.sf.rarity && q.trim().length >= 2){
+        // smart søgning i hele kortlisten
+        const idx = await loadIndex(); if (n !== searchN) return;
+        let list = smartSearch(idx, q);
+        s.textHits = false;
+        if (list.length < 3){ const extra = await textSearch(q, idx); if (n !== searchN) return; if (extra.length){ list = list.concat(extra.filter(c => !list.includes(c))); s.textHits = true; } }
+        s.results = list.map(c => ({id:c.id, localId:c.localId, name:c.name, image:c.image, setName:c.setName})); s.lang = lang;
+        s.busy = false; const rr = $('#results'); if (rr) rr.innerHTML = resultsHtml();
+        enrichSearch(); return;
+      }
       const params = [];
       if (q.trim().length >= min) params.push('name=' + encodeURIComponent(q.trim()));
       if (S.sf.rarity) params.push('rarity=' + encodeURIComponent(S.sf.rarity));

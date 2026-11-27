@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -433,7 +433,7 @@ function vScan(){
   const sc = S.scan;
   let body = '';
   if (sc.phase === 'live' || sc.phase === 'starting'){
-    body = `<div class="cam"><video id="vid" playsinline muted autoplay></video><div class="frame"></div><div class="msg">${sc.phase === 'starting' ? 'Starter kameraet …' : 'Læg kortet inden for rammen, så nummeret i bunden er skarpt'}</div></div>
+    body = `<div class="cam"><video id="vid" playsinline muted autoplay></video><div class="frame"></div><div class="msg">${sc.phase === 'starting' ? 'Starter kameraet …' : 'Hold kortet inden for rammen og tryk på knappen'}</div></div>
     <button class="shutter" data-act="snap" aria-label="Tag billede og find kortet"></button>
     <label class="btn ghost full" for="camIn">Brug telefonens kamera i stedet</label>`;
   } else if (sc.phase === 'crop'){
@@ -450,14 +450,15 @@ function vScan(){
     : `<div class="box col"><h2>Kortet blev ikke fundet</h2><p class="small" style="margin:0">${esc(sc.msg || '')}</p>
       ${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede" style="width:140px;border-radius:8px;align-self:center">` : ''}
       <ul class="small mut" style="margin:0;padding-left:18px"><li>Tag kortet ud af plastiklommen (genskin gør tallene ulæselige)</li><li>Hold telefonen stille på normal afstand, så billedet er skarpt</li><li>Markér kun selve kortet – ikke bordet omkring</li><li>Virker det ikke, så søg på navnet i stedet</li></ul></div>`}
-    <div class="row wrapr"><label class="btn" for="camIn">Scan igen</label>${cropSrc ? '<button class="btn ghost" data-act="recrop">Markér igen</button>' : ''}<button class="btn ghost" data-act="toSearch">Søg i stedet</button></div>`;
+    <div class="row wrapr"><button class="btn" data-act="rescan">Scan igen</button>${cropSrc ? '<button class="btn ghost" data-act="recrop">Markér igen</button>' : ''}<button class="btn ghost" data-act="toSearch">Søg i stedet</button></div>`;
   } else if (sc.phase === 'nocam'){
     body = `<div class="box col"><h2>Kameraet kunne ikke startes</h2><p class="small mut" style="margin:0">${esc(sc.msg)}</p></div>
     <label class="btn full" for="camIn">Tag billede af kortet</label><label class="btn ghost full" for="fileIn">Vælg fra dine billeder</label><button class="btn ghost full" data-act="startCam">Prøv kameraet igen</button>`;
   } else {
     body = `${langPills()}<div class="box col"><p style="margin:0">Appen læser kortets <b>nummer</b> (f.eks. 223/197) og finder det officielle billede og prisen.${S.lang === 'ja' ? ' Japanske kort findes via nummeret – navnet kan ikke læses.' : ''}</p>
-    <p class="small mut" style="margin:0">Tag billedet på normal afstand, så det er skarpt – du markerer selv kortet bagefter. Tag gerne kortet ud af plastiklommen, så der ikke er genskin.</p></div>
-    <label class="btn full" for="camIn">Tag billede af kortet</label>
+    <p class="small mut" style="margin:0">Hold kortet inden for rammen og tryk på knappen – så finder AI'en kortet. Det virker også med glans og plastiklommer.</p></div>
+    <button class="btn full" data-act="startCam">Start kameraet</button>
+    <label class="btn ghost full" for="camIn">Tag billede med telefonens kamera</label>
     <label class="btn ghost full" for="fileIn">Vælg fra dine billeder</label>`;
   }
   return `<div class="col"><h1>Scan kort</h1>${body}<span class="tiny mut" style="text-align:center">Version ${APP_VERSION}</span></div>`;
@@ -918,9 +919,9 @@ async function snap(){
   const cam = vid.parentElement; cam.classList.add('flash'); setTimeout(() => cam.classList.remove('flash'), 250);
   const box = vid.parentElement.getBoundingClientRect(), W = box.width, H = box.height, vw = vid.videoWidth, vh = vid.videoHeight;
   const sc = Math.max(W / vw, H / vh), ox = (W - vw * sc) / 2, oy = (H - vh * sc) / 2;
-  const fh = H * 0.84, fw = fh * 63 / 88, fx = (W - fw) / 2, fy = (H - fh) / 2;
+  const fh = Math.min(H * 0.84 * 1.08, H), fw = fh * 63 / 88, fx = (W - fw) / 2, fy = (H - fh) / 2;
   const sx = (fx - ox) / sc, sy = (fy - oy) / sc, sw = fw / sc, sh = fh / sc;
-  const c = document.createElement('canvas'); c.width = 900; c.height = Math.round(900 * 88 / 63);
+  const c = document.createElement('canvas'); c.width = 1100; c.height = Math.round(1100 * 88 / 63);
   c.getContext('2d').drawImage(vid, sx, sy, sw, sh, 0, 0, c.width, c.height);
   stopCam(); identify(c);
 }
@@ -1325,7 +1326,7 @@ document.addEventListener('click', async ev => {
   const a = b.dataset.act, v = b.dataset.v;
   if (a !== 'del' && a !== 'unfriend') S.delArm = false;
   switch (a){
-    case 'tab': if (v !== 'scan') stopCam(); S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'scan' && S.scan.phase !== 'result') S.scan = {phase:'idle'}; if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); if (v === 'scan' && S.scan.phase === 'idle' && localStorage.getItem('kortscanner.camok')) startCam(); return;
+    case 'tab': if (v !== 'scan') stopCam(); S.tab = v; S.view = null; if (v === 'home') loadHome(); if (v === 'scan' && S.scan.phase !== 'result') S.scan = {phase:'idle'}; if (v === 'noter'){ render(); S.notes.forEach(n => n.read = true); persistLocal(); updateBadges(); window.scrollTo(0, 0); return; } render(); window.scrollTo(0, 0); if (['venner','kvit'].includes(v)) loadSocial(); if (v === 'scan' && S.scan.phase === 'idle') startCam(); return;
     case 'back': if (S.view && S.view.type === 'sell'){ const id = S.sell.id; S.sell = null; go({type:'entry', id}); } else if (S.view) go(null); else { S.tab = 'home'; render(); window.scrollTo(0, 0); } return;
     case 'coll': S.coll = v; break;
     case 'lang': S.lang = v; S.search = {q:'', results:null, busy:false, err:''}; S.sf.rarity = ''; break;
@@ -1336,7 +1337,7 @@ document.addEventListener('click', async ev => {
     case 'setMissing': S.view.missing = v === '1'; break;
     case 'startCam': try { localStorage.setItem('kortscanner.camok', '1'); } catch(e){} startCam(); return;
     case 'snap': snap(); return;
-    case 'rescan': S.scan = {phase:'idle'}; render(); return;
+    case 'rescan': S.scan = {phase:'idle'}; startCam(); return;
     case 'cropGo': cropGo(); return;
     case 'recrop': if (cropSrc){ const d = Math.min(1, 1100 / Math.max(cropSrc.width, cropSrc.height)), c2 = document.createElement('canvas'); c2.width = Math.round(cropSrc.width * d); c2.height = Math.round(cropSrc.height * d); c2.getContext('2d').drawImage(cropSrc, 0, 0, c2.width, c2.height); S.scan = {phase:'crop', img:c2.toDataURL('image/jpeg', 0.85), box:null}; } render(); return;
     case 'toSearch': S.tab = 'sog'; S.view = null; render(); return;

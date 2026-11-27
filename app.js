@@ -32,14 +32,54 @@ const today = () => new Date().toLocaleDateString('da-DK');
 let toastT;
 function toast(m){ const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3200); }
 
-/* ---------- storage ---------- */
+/* ---------- storage + sky (Supabase) ---------- */
+const SUPA_URL = 'https://yxqwgfgpszquvbqauiup.supabase.co';
+const SUPA_KEY = 'sb_publishable_nDW0EKIep6M-ahKcA_Y3oQ_Di62KLUf'; // offentlig nøgle – data er beskyttet af regler i databasen
+let sb = null, user = null;
+const synced = {entries:{}, sales:{}}; // sidst gemte udgave i skyen, pr. id
+const cacheKey = () => STORE_KEY + (user ? ':' + user.id : '');
 function load(){
-  try { const raw = localStorage.getItem(STORE_KEY); if (raw){ const d = JSON.parse(raw); S.data = {entries: d.entries || [], sold: d.sold || []}; } } catch(e){}
+  S.data = {entries:[], sold:[]};
+  try { const raw = localStorage.getItem(cacheKey()); if (raw){ const d = JSON.parse(raw); S.data = {entries: d.entries || [], sold: d.sold || []}; } } catch(e){}
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch(e){}
 }
+let syncT = null, syncing = false, syncAgain = false;
 function save(){
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(S.data)); }
-  catch(e){ toast('Kunne ikke gemme på telefonen. Lav en backup under Mere.'); }
+  try { localStorage.setItem(cacheKey(), JSON.stringify(S.data)); }
+  catch(e){ toast('Kunne ikke gemme på telefonen.'); }
+  if (sb && user){ clearTimeout(syncT); syncT = setTimeout(syncUp, 700); }
+}
+async function syncTable(table, list, key){
+  const now = {}; list.forEach(x => now[x.id] = JSON.stringify(x));
+  const up = list.filter(x => synced[key][x.id] !== now[x.id]).map(x => ({id:x.id, user_id:user.id, data:x}));
+  const del = Object.keys(synced[key]).filter(id => !(id in now));
+  if (up.length){ const {error} = await sb.from(table).upsert(up); if (error) throw error; up.forEach(r => synced[key][r.id] = now[r.id]); }
+  if (del.length){ const {error} = await sb.from(table).delete().in('id', del); if (error) throw error; del.forEach(id => delete synced[key][id]); }
+}
+async function syncUp(){
+  if (!sb || !user) return;
+  if (syncing){ syncAgain = true; return; }
+  syncing = true;
+  try { await syncTable('entries', S.data.entries, 'entries'); await syncTable('sales', S.data.sold, 'sales'); S.syncErr = false; }
+  catch(e){ S.syncErr = true; }
+  syncing = false;
+  if (syncAgain){ syncAgain = false; syncUp(); }
+}
+async function syncDown(){
+  const [a, b] = await Promise.all([sb.from('entries').select('id,data'), sb.from('sales').select('id,data')]);
+  if (a.error || b.error) throw (a.error || b.error);
+  const cloudE = a.data.map(r => r.data), cloudS = b.data.map(r => r.data);
+  synced.entries = {}; cloudE.forEach(x => synced.entries[x.id] = JSON.stringify(x));
+  synced.sales = {}; cloudS.forEach(x => synced.sales[x.id] = JSON.stringify(x));
+  // læg kort fra telefonen, som ikke er i skyen endnu, oven i (første login / offline-ændringer)
+  const ids = new Set(cloudE.map(x => x.id)), sids = new Set(cloudS.map(x => x.id));
+  let legacy = {entries:[], sold:[]}; try { const raw = localStorage.getItem(STORE_KEY); if (raw) legacy = JSON.parse(raw); } catch(e){}
+  const localE = S.data.entries.concat(legacy.entries || []), localS = S.data.sold.concat(legacy.sold || []);
+  const extraE = localE.filter(x => x && x.id && !ids.has(x.id) && (ids.add(x.id), true));
+  const extraS = localS.filter(x => x && x.id && !sids.has(x.id) && (sids.add(x.id), true));
+  S.data = {entries: cloudE.concat(extraE), sold: cloudS.concat(extraS)};
+  try { localStorage.removeItem(STORE_KEY); } catch(e){}
+  save();
 }
 const entry = id => S.data.entries.find(e => e.id === id);
 
@@ -305,8 +345,9 @@ function vReceipt(){
 function vMere(){
   const n = S.data.entries.length;
   return `<div class="col">${back()}<h1>Mere</h1>
+  <div class="box col"><h3>Din konto</h3><p class="small mut" style="margin:0">Logget ind som <b style="color:var(--ink)">${esc(user ? user.email : '')}</b>. Din samling gemmes på kontoen${S.syncErr ? ' – <b class="down">seneste gemning i skyen fejlede, prøver igen ved næste ændring</b>' : ''}.</p><button class="btn ghost" data-act="logout">Log ud</button></div>
   <div class="box col"><h3>Læg appen på hjemmeskærmen</h3><p class="small mut" style="margin:0"><b>iPhone:</b> tryk på Del-knappen i Safari og vælg “Føj til hjemmeskærm”.<br><b>Android:</b> tryk på menuen ⋮ i Chrome og vælg “Installer app” eller “Føj til startskærm”.</p></div>
-  <div class="box col"><h3>Backup</h3><p class="small mut" style="margin:0">Din samling (${n} kort) gemmes kun på denne telefon. Lav en backup jævnligt, så du ikke mister den, hvis telefonen skiftes eller browserdata slettes.</p>
+  <div class="box col"><h3>Backup</h3><p class="small mut" style="margin:0">Din samling (${n} kort) ligger på din konto. Du kan også gemme en kopi som fil.</p>
   <button class="btn" data-act="export">Gem backup-fil</button><label class="btn ghost" for="importIn">Hent fra backup-fil</label></div>
   <div class="box col"><h3>Om data</h3><p class="small mut" style="margin:0">Kortdata, billeder og priser kommer fra <a href="https://tcgdex.dev" target="_blank" rel="noopener" style="color:var(--link)">TCGdex</a> (Cardmarket og TCGplayer). Billederne tilhører The Pokémon Company. Scanneren læser teksten på kortet direkte på telefonen.</p></div>
   <button class="btn danger full" data-act="wipe">${S.delArm ? 'Tryk igen for at slette alt' : 'Slet hele samlingen'}</button></div>`;
@@ -519,6 +560,7 @@ document.addEventListener('click', ev => {
     case 'shareR': { const s = S.data.sold.find(x => x.id === S.view.id); navigator.share({title:'Kvittering ' + s.no, text:receiptText(s)}).catch(() => {}); return; }
     case 'copyR': { const s = S.data.sold.find(x => x.id === S.view.id); (navigator.clipboard ? navigator.clipboard.writeText(receiptText(s)) : Promise.reject()).then(() => toast('Kvitteringen er kopieret.'), () => toast('Kunne ikke kopiere.')); return; }
     case 'export': exportData(); return;
+    case 'logout': stopCam(); sb.auth.signOut(); S.data = {entries:[], sold:[]}; return;
     case 'wipe': if (!S.delArm){ S.delArm = true; break; } S.data = {entries:[], sold:[]}; save(); S.delArm = false; toast('Samlingen er slettet.'); break;
     default: return;
   }
@@ -560,12 +602,74 @@ function lockScreen(msg){
   $('#inviteBtn').onclick = go2; $('#inviteIn').onkeydown = e => { if (e.key === 'Enter') go2(); };
 }
 let started = false;
-function start(){
+async function start(){
   if (started) return; started = true;
+  if (!window.supabase){ authScreen('login', 'Kunne ikke forbinde til login. Tjek din internetforbindelse og genindlæs siden.'); return; }
+  sb = window.supabase.createClient(SUPA_URL, SUPA_KEY, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}});
+  sb.auth.onAuthStateChange((ev, session) => {
+    if (ev === 'PASSWORD_RECOVERY'){ authScreen('newpass'); return; }
+    if (ev === 'SIGNED_OUT'){ user = null; authScreen('login'); }
+  });
+  const {data} = await sb.auth.getSession();
+  if (data && data.session) enterApp(data.session.user); else authScreen('login');
+}
+let entered = false;
+async function enterApp(u){
+  user = u; load();
   $('#tabs').hidden = false; document.querySelector('header.top .iconbtn').hidden = false;
-  load(); render();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  S.view = null; S.tab = 'samling'; render();
+  if (!entered){
+    entered = true;
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+  try { await syncDown(); render(); } catch(e){ S.syncErr = true; render(); toast('Kunne ikke hente din samling fra skyen. Du ser den, der er gemt på telefonen.'); }
   setTimeout(() => { if (S.data.entries.length) refreshPrices(false); }, 1500);
+}
+function authScreen(mode, msg, ok){
+  $('#tabs').hidden = true; document.querySelector('header.top .iconbtn').hidden = true;
+  const titles = {login:'Log ind', signup:'Opret konto', forgot:'Glemt adgangskode', newpass:'Vælg ny adgangskode'};
+  const btn = {login:'Log ind', signup:'Opret konto', forgot:'Send link', newpass:'Gem adgangskode'}[mode];
+  $('#app').innerHTML = `<form class="col" id="authForm" style="padding-top:16px" novalidate>
+  <h1>${titles[mode]}</h1>
+  ${mode === 'signup' ? '<p class="mut" style="margin:0">Din samling og dine salg gemmes på din konto, så du har dem på alle dine enheder.</p>' : ''}
+  ${mode === 'forgot' ? '<p class="mut" style="margin:0">Skriv din e-mail, så sender vi et link, hvor du kan vælge en ny adgangskode.</p>' : ''}
+  ${mode !== 'newpass' ? `<label class="f">E-mail<input class="i" id="aEmail" type="email" autocomplete="email" inputmode="email" required></label>` : ''}
+  ${mode !== 'forgot' ? `<label class="f">${mode === 'newpass' ? 'Ny adgangskode' : 'Adgangskode'}<input class="i" id="aPass" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" minlength="8" required></label>` : ''}
+  ${mode === 'signup' || mode === 'newpass' ? '<span class="tiny mut">Mindst 8 tegn.</span>' : ''}
+  ${msg ? `<div class="note ${ok ? '' : 'down'}" role="alert">${esc(msg)}</div>` : ''}
+  <button class="btn full" type="submit" id="aBtn">${btn}</button>
+  ${mode === 'login' ? `<button class="btn text" type="button" data-auth="forgot">Glemt adgangskode?</button><div class="row" style="justify-content:center;gap:4px"><span class="mut small">Ny bruger?</span><button class="btn text" type="button" data-auth="signup">Opret konto</button></div>` : ''}
+  ${mode === 'signup' || mode === 'forgot' ? `<button class="btn text" type="button" data-auth="login">Tilbage til log ind</button>` : ''}
+  </form>`;
+  document.querySelectorAll('[data-auth]').forEach(b => b.onclick = () => authScreen(b.dataset.auth));
+  $('#authForm').onsubmit = async ev => {
+    ev.preventDefault();
+    const email = $('#aEmail') ? $('#aEmail').value.trim() : '', pass = $('#aPass') ? $('#aPass').value : '';
+    if (mode !== 'newpass' && !/^\S+@\S+\.\S+$/.test(email)) return authScreen(mode, 'Skriv en gyldig e-mail.');
+    if ((mode === 'signup' || mode === 'newpass') && pass.length < 8) return authScreen(mode, 'Adgangskoden skal være mindst 8 tegn.');
+    $('#aBtn').disabled = true; $('#aBtn').textContent = 'Vent …';
+    const back = location.origin + location.pathname;
+    try {
+      if (mode === 'login'){
+        const {data, error} = await sb.auth.signInWithPassword({email, password:pass});
+        if (error) return authScreen('login', /confirm/i.test(error.message) ? 'Du skal først bekræfte din e-mail. Tjek din indbakke (og spam).' : 'Forkert e-mail eller adgangskode.');
+        enterApp(data.user);
+      } else if (mode === 'signup'){
+        const {data, error} = await sb.auth.signUp({email, password:pass, options:{emailRedirectTo:back}});
+        if (error) return authScreen('signup', /registered|exists/i.test(error.message) ? 'Der findes allerede en konto med den e-mail. Log ind i stedet.' : /rate|limit/i.test(error.message) ? 'Der er sendt for mange mails lige nu. Prøv igen om lidt.' : 'Kontoen kunne ikke oprettes: ' + error.message);
+        if (data.session) enterApp(data.user);
+        else authScreen('login', 'Næsten færdig! Vi har sendt en mail til ' + email + '. Tryk på linket i mailen, og log så ind her.', true);
+      } else if (mode === 'forgot'){
+        const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo:back});
+        if (error) return authScreen('forgot', /rate|limit/i.test(error.message) ? 'Der er sendt for mange mails lige nu. Prøv igen om lidt.' : 'Kunne ikke sende mailen. Prøv igen.');
+        authScreen('login', 'Hvis der findes en konto med den e-mail, har vi sendt et link til at vælge en ny adgangskode.', true);
+      } else if (mode === 'newpass'){
+        const {data, error} = await sb.auth.updateUser({password:pass});
+        if (error) return authScreen('newpass', 'Adgangskoden kunne ikke gemmes. Prøv igen.');
+        toast('Din nye adgangskode er gemt.'); enterApp(data.user);
+      }
+    } catch(e){ authScreen(mode, 'Ingen forbindelse. Tjek internettet og prøv igen.'); }
+  };
 }
 (async () => {
   const m = location.hash.match(/k=([A-Za-z0-9-]+)/);

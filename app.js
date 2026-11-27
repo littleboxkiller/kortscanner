@@ -4,7 +4,7 @@
 (() => {
 'use strict';
 const APIS = {en:'https://api.tcgdex.net/v2/en', ja:'https://api.tcgdex.net/v2/ja'};
-const APP_VERSION = '17';
+const APP_VERSION = '18';
 const EUR_DKK = 7.46; // kronen er bundet til euroen (centralkurs 7,46038)
 const COLLS = {binder:'Binder', sale:'Til salg', wish:'Ønskeliste'};
 const CONDS = ['Mint','Near Mint','Let brugt','Brugt','Slidt','Gradet (PSA/BGS/CGC)'];
@@ -445,7 +445,7 @@ function vScan(){
     body = `<div class="cam">${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede af kortet" style="object-fit:contain">` : ''}</div>${spinner(sc.msg || 'Læser kortet …')}`;
   } else if (sc.phase === 'result'){
     body = `${sc.cands.length ? `<h2>${sc.cands.length === 1 ? 'Er det dette kort?' : 'Hvilket kort er det?'}</h2>
-    ${sc.guess ? `<p class="small mut" style="margin:0">Læst: ${esc([sc.guess.name, sc.guess.num].filter(Boolean).join(' · '))}</p>` : ''}
+    ${sc.guess ? `<p class="small mut" style="margin:0">${sc.ai ? 'AI læste' : 'Læst'}: ${esc([sc.guess.name, sc.guess.num, sc.guess.set].filter(Boolean).join(' · '))}</p>` : ''}
     <div class="cards">${sc.cands.map(c => `<button class="tile" data-act="openCard" data-v="${esc(c.id)}" data-l="${esc(sc.lang || 'en')}"${c.best ? ' style="outline:3px solid var(--acc)"' : ''}>${artEl(c.image, c.name)}${c.best ? '<span class="tiny b" style="color:var(--acc)">Bedste match</span>' : ''}<span class="name">${esc(c.name)}</span><span class="tiny mut">${esc(c.setName || '')}${c.localId ? ' · ' + esc(c.localId) : ''}</span></button>`).join('')}</div>`
     : `<div class="box col"><h2>Kortet blev ikke fundet</h2><p class="small" style="margin:0">${esc(sc.msg || '')}</p>
       ${sc.img ? `<img src="${esc(sc.img)}" alt="Dit billede" style="width:140px;border-radius:8px;align-self:center">` : ''}
@@ -1043,10 +1043,72 @@ async function visualRank(canvas, cands, onStep){
   if (ranked[0] && dist[ranked[0].id] != null) ranked[0].best = true;
   return ranked.concat(cands.slice(150));
 }
+/* ---------- AI-scanning (Google Gemini via vores server-funktion "scan") ---------- */
+async function aiScan(canvas){
+  if (!sb || !user) return {err:'login'};
+  const k = Math.min(1, 1024 / Math.max(canvas.width, canvas.height)), c = document.createElement('canvas');
+  c.width = Math.round(canvas.width * k); c.height = Math.round(canvas.height * k); c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+  try {
+    const res = await Promise.race([sb.functions.invoke('scan', {body:{image:c.toDataURL('image/jpeg', 0.85)}}), new Promise(r => setTimeout(() => r({data:{error:'timeout'}}), 25000))]);
+    const d = res && res.data; if (!d) return {err:'net'};
+    if (d.error) return {err:String(d.error)};
+    return d.card && d.card.name ? {card:d.card} : {err:'nocard'};
+  } catch(e){ return {err:'net'}; }
+}
+const baseName = n => String(n || '').replace(/\b(LV\.?\s?X|LEVEL[- ]UP)\b/ig, '').replace(/[★☆δ]/g, '').replace(/\s+/g, ' ').trim();
+async function aiCandidates(ai, lang, canvas){
+  const found = [], seen = new Set();
+  const add = c => { if (c && !seen.has(c.id) && !isPocket(c.id)){ seen.add(c.id); S.cardCache[ck(c.id, lang)] = c; found.push(c); } };
+  const num = ai.number ? readNum(String(ai.number)) : null;
+  const sets = await getSets(lang);
+  const sn = norm(ai.set);
+  const setHits = sn ? sets.filter(x => { const a = norm(x.name); return a && (a === sn || a.includes(sn) || sn.includes(a)); }).slice(0, 4) : [];
+  if (num){
+    const locals = [...new Set([num.pre + num.local, num.pre + String(+num.local), num.pre + num.local.padStart(2, '0'), num.pre + num.local.padStart(3, '0'), num.local])];
+    // 1) sættet AI'en nævner + nummeret
+    for (const st of setHits){ for (const l of locals){ add(await api('/sets/' + encodeURIComponent(st.id) + '/' + encodeURIComponent(l), lang).catch(() => null)); } }
+    // 2) promo-numre (DP45, SWSH050 ...)
+    if (!found.length && num.pre){ for (const l of locals.filter(x => /^[A-Z]/.test(x))){ const r = await api('/cards?localId=eq:' + encodeURIComponent(l), lang).catch(() => null); for (const b of (r || []).slice(0, 6)) add(await getCard(b.id, lang).catch(() => null)); } }
+    // 3) alle sæt med det rigtige antal kort
+    if (!found.length && num.total){ const hits = sets.filter(x => x.official === num.total || (num.pre && x.total === num.total)).slice(0, 30); const got = await Promise.all(hits.flatMap(x => locals.slice(0, 3).map(l => api('/sets/' + encodeURIComponent(x.id) + '/' + encodeURIComponent(l), lang).catch(() => null)))); got.forEach(add); }
+  }
+  let list = found.map(c => ({id:c.id, name:c.name, image:c.image, setName:c.set && c.set.name, localId:c.localId}));
+  const bn = baseName(ai.name);
+  if (list.length > 1){ const good = list.filter(c => nameScore(bn, baseName(c.name)) >= 80); if (good.length) list = good; }
+  if (list.length === 1 && nameScore(bn, baseName(list[0].name)) >= 80) list[0].sure = true;
+  // 4) navnesøgning + billedsammenligning
+  if (!list.length || (list.length && nameScore(bn, baseName(list[0].name)) < 80)){
+    const words = bn.split(' ').filter(Boolean);
+    for (const q of [...new Set([ai.name, bn, words.slice(0, 2).join(' '), words[0]].filter(Boolean))]){
+      const r = await api('/cards?name=' + encodeURIComponent(q), lang).catch(() => null);
+      let l2 = (r || []).filter(c => !isPocket(c.id));
+      if (!l2.length) continue;
+      if (num) l2.sort((a, b) => ((b.localId === num.local || b.localId === num.pre + num.local) ? 1 : 0) - ((a.localId === num.local || a.localId === num.pre + num.local) ? 1 : 0));
+      list = list.concat(l2.slice(0, 150).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId})).filter(c => !list.some(x => x.id === c.id)));
+      break;
+    }
+  }
+  return list;
+}
 async function identify(canvas, photo){
   const lang = S.lang;
   S.scan = {phase:'busy', img:canvas.toDataURL('image/jpeg', 0.7), msg:'Gør kortlæseren klar (første gang tager det lidt tid) …', lang}; render();
   try {
+    // først AI'en – den kan se hele kortet, også med glans og holo
+    S.scan.msg = 'AI kigger på kortet …'; render();
+    const air = await aiScan(canvas);
+    if (air.card && (+air.card.confidence || 0) >= 0.25){
+      const ai = air.card; S.scan.msg = 'Finder ' + ai.name + ' …'; render();
+      let cands = await aiCandidates(ai, lang, canvas);
+      if (cands.length > 1 && !cands[0].sure){ S.scan.msg = 'Sammenligner med kortbilleder …'; render(); cands = await visualRank(canvas, cands); }
+      cands = cands.slice(0, 40);
+      if (cands.length){
+        S.scan = {phase:'result', lang, cands, img:S.scan.img, ai:true, guess:{name:ai.name, num:ai.number, set:ai.set}};
+        if (cands.length === 1 || cands[0].sure){ openCard(cands[0].id, lang); return; }
+        render(); return;
+      }
+    }
+    S.scan.aiErr = air.err || (air.card ? 'lowconf' : '');
     const w = await getWorker();
     S.scan.msg = 'Læser kortet …'; render();
     const bottom = await w.recognize(region(canvas, 0.86, 1));
@@ -1092,12 +1154,13 @@ async function identify(canvas, photo){
         if (list.length){ cands = list.slice(0, 150).map(c => ({id:c.id, name:c.name, image:c.image, localId:c.localId})); break; }
       }
     }
+    const aiErr = S.scan.aiErr;
     const q = quality(canvas);
     const why = !q ? '' : q.bright < 55 ? ' Billedet er for mørkt – find mere lys.' : q.bright > 235 ? ' Billedet er overbelyst – undgå genskin fra lampen.' : q.sharp < 40 ? ' Billedet er uskarpt – hold telefonen stille og lidt længere væk, så den kan fokusere.' : '';
     if (cands.length > 1){ S.scan.msg = 'Sammenligner med kortbilleder …'; render(); cands = await visualRank(canvas, cands, (a, b) => { S.scan.msg = `Sammenligner med kortbilleder (${a}/${b}) …`; const m = document.querySelector('#app .spin'); if (m && m.parentElement) m.parentElement.lastChild.textContent = S.scan.msg; }); }
     cands = cands.slice(0, 40);
     S.scan = {phase:'result', lang, cands, img:S.scan.img, guess:{name, num: num && num.text},
-      msg: (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
+      msg: (aiErr === 'quota' ? 'AI-scanneren har brugt dagens gratis kvote, så appen brugte den simple tekstlæser. ' : aiErr && !['missing_key','login'].includes(aiErr) ? 'AI-scanneren svarede ikke, så appen brugte den simple tekstlæser. ' : '') + (num ? `Appen læste nummeret ${num.text}, men fandt intet kort med det nummer.` : name ? `Appen kunne ikke læse nummeret i bunden af kortet (den læste navnet "${name}").` : 'Appen kunne ikke læse nummeret i bunden af kortet.') + why};
     if (cands.length === 1){ go({type:'card', id:cands[0].id, lang}); return; }
   } catch(e){
     console.error('scan', e);

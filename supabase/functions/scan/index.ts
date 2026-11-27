@@ -52,7 +52,7 @@ async function tryGemini(img: string): Promise<Result> {
       }),
     });
     if (r.status === 404 || r.status === 503) { last += `${model} ${r.status}; `; continue; }
-    if (r.status === 429) return { err: 'gemini: quota' };
+    if (r.status === 429) { last += `${model} quota; `; continue; }
     const j = await r.json().catch(() => null);
     if (!r.ok) { last += `${model} http_${r.status}; `; continue; }
     const text = j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || '').join('') || '';
@@ -60,7 +60,7 @@ async function tryGemini(img: string): Promise<Result> {
     if (card) return { card, model };
     last += `${model} parse; `;
   }
-  return { err: 'gemini: ' + (last || 'failed') };
+  return { err: 'gemini: ' + (last || 'failed') + (last && last.split(';').filter((x) => x.trim()).every((x) => x.includes('quota') || x.includes('404')) ? ' quota' : '') };
 }
 
 async function tryClaude(img: string): Promise<Result> {
@@ -71,10 +71,10 @@ async function tryClaude(img: string): Promise<Result> {
     headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 400,
+      max_tokens: 2000,
       messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } },
-        { type: 'text', text: PROMPT },
+        { type: 'text', text: PROMPT + '\nReply with the JSON object only, no other text.' },
       ] }],
     }),
   });
@@ -82,7 +82,7 @@ async function tryClaude(img: string): Promise<Result> {
   if (!r.ok) return { err: `claude: http_${r.status} ${j?.error?.type || ''} ${String(j?.error?.message || '').slice(0, 120)}` };
   const text = (j?.content || []).filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text).join('');
   const card = parseCard(text);
-  return card ? { card, model: CLAUDE_MODEL } : { err: 'claude: parse' };
+  return card ? { card, model: CLAUDE_MODEL } : { err: 'claude: parse ' + (j?.stop_reason || '') + ' ' + text.slice(0, 300) };
 }
 
 Deno.serve(async (req) => {
@@ -108,7 +108,7 @@ Deno.serve(async (req) => {
       }
       if (res.err) errs.push(res.err);
     }
-    const quota = errs.some((e) => e.includes('quota')) && !errs.some((e) => e.startsWith('claude: http') || e === 'claude: parse');
+    const quota = errs.some((e) => e.includes('quota')) && !errs.some((e) => e.startsWith('claude: http') || e.startsWith('claude: parse'));
     return json({ error: quota ? 'quota' : errs.join(' | ') || 'failed' });
   } catch (e) {
     return json({ error: String(e) }, 400);
